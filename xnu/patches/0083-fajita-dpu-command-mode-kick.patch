@@ -1,0 +1,176 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index a62416c..79c9a82 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -37,6 +37,7 @@
+ #include "SweetSurface.h"
+ 
+ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
++extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ 
+ #if defined(SWEET)
+ #include <IOKit/IOService.h>
+@@ -75,13 +76,39 @@ enum {
+  * screens (UIKit: "No status bar visual provider for screen", the red
+  * rdar://45025538 bar for 360x800 points). The display is therefore
+  * presented as the iPhone X panel, 1125x2436 (375x812 points @3x), and the
+- * centered 1080x2400 part of it is shown on the 1080x2400 panel.
++ * centered panel-sized part of it is shown (fajita: 1080x2340).
+  * Boot-arg sweetfb_native=1 presents the real panel size instead.
+  */
+ #define SWEET_FB_LOGICAL_W              1125
+ #define SWEET_FB_LOGICAL_H              2436
+ #define SWEET_FB_FORMAT_BGRA            0x42475241
+ 
++/*
++ * fajita (OnePlus 6T): the s6e3fc2x01 panel is a MIPI DSI *command-mode*
++ * panel. Unlike sweet's video-mode panel, the display engine (SDM845 DPU
++ * 4.0) only sends a frame to the panel's own RAM when it is triggered, so
++ * pixels written into ABL's splash buffer are not shown by themselves.
++ * The boot shim (shim/fajita_disp.c) turns on the ping-pong block's
++ * hardware autorefresh, which re-sends the buffer on every tear-effect
++ * pulse. If that did not stick, this driver kicks CTL_START once per vsync
++ * tick instead. Boot-arg fajita_dpu: 0 = never touch the DPU, 1 = auto
++ * (default: kick only if autorefresh is off), 2 = always kick.
++ * Register offsets: Linux drivers/gpu/drm/msm/disp/dpu1 (dpu_4_0_sdm845.h,
++ * dpu_hw_ctl.c, dpu_hw_pingpong.c); MDP block at 0xae01000.
++ */
++#define FAJITA_DISPCC_PA                0x0af00000
++#define FAJITA_DISPCC_MDSS_GDSCR        0x3000          /* bit 31 PWR_ON */
++#define FAJITA_DISPCC_MDP_CBCR          0x200c          /* bit 31 CLK_OFF */
++#define FAJITA_DISPCC_AHB_CBCR          0x4004
++#define FAJITA_MDP_PA                   0x0ae01000
++#define FAJITA_MDP_SIZE                 0x8f000
++#define FAJITA_CTL(n)                   (0x1000 + 0x200 * (n))
++#define FAJITA_CTL_TOP                  0x14
++#define FAJITA_CTL_START                0x1c
++#define FAJITA_PP(n)                    (0x70000 + 0x800 * (n))
++#define FAJITA_PP_TEAR_CHECK_EN         0x00
++#define FAJITA_PP_AUTOREFRESH           0x30            /* bit 31 enable, [15:0] frames */
++
+ class IOMobileFramebuffer : public IOService {
+ 	OSDeclareDefaultStructors(IOMobileFramebuffer);
+ };
+@@ -116,6 +143,11 @@ public:
+ 	uint32_t      fFlushTicks;    /* vsync ticks between panel copies */
+ 	bool          fPowerOff;      /* RequestPowerChange(0) */
+ 	uint32_t      fFadeStep;      /* fade-out steps done while off */
++	volatile uint32_t *fDpuCtl;   /* fajita: active command-mode CTL, kicked per tick */
++	uint64_t      fDpuKicks, fDpuBusy;
++
++	void          dpuSetup(void);
++	void          dpuKick(void);
+ 
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ 	void addClient(IOMobileFramebufferUserClient *client);
+@@ -197,6 +229,8 @@ AppleCLCD::start(IOService *provider)
+ 	fFlushTicks = (hz == 0 || hz >= 60) ? 1 : 60 / hz;
+ 	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
+ 
++	dpuSetup();
++
+ 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
+ 	setProperty("external", false);
+ 	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
+@@ -206,6 +240,84 @@ AppleCLCD::start(IOService *provider)
+ 	return true;
+ }
+ 
++void
++AppleCLCD::dpuSetup(void)
++{
++	int mode = 1;
++	PE_parse_boot_argn("fajita_dpu", &mode, sizeof(mode));
++	if (mode == 0) {
++		IOLog("FAJITA DPU: left alone (fajita_dpu=0)\n");
++		return;
++	}
++	/* Never touch a gated block: an access to it hangs the bus. */
++	vm_offset_t cc = ml_io_map(FAJITA_DISPCC_PA, 0x10000);
++	if (cc == 0) {
++		IOLog("FAJITA DPU: dispcc map failed\n");
++		return;
++	}
++	uint32_t gdsc = *(volatile uint32_t *)(cc + FAJITA_DISPCC_MDSS_GDSCR);
++	uint32_t mdp = *(volatile uint32_t *)(cc + FAJITA_DISPCC_MDP_CBCR);
++	uint32_t ahb = *(volatile uint32_t *)(cc + FAJITA_DISPCC_AHB_CBCR);
++	IOLog("FAJITA DPU: MDSS GDSC 0x%08x MDP CBCR 0x%08x AHB CBCR 0x%08x\n", gdsc, mdp, ahb);
++	if (!(gdsc & (1u << 31)) || (mdp & (1u << 31)) || (ahb & (1u << 31))) {
++		IOLog("FAJITA DPU: display engine not powered/clocked by ABL; no kick\n");
++		return;
++	}
++	vm_offset_t m = ml_io_map(FAJITA_MDP_PA, FAJITA_MDP_SIZE);
++	if (m == 0) {
++		IOLog("FAJITA DPU: MDP map failed\n");
++		return;
++	}
++	bool autorefresh = false;
++	for (int n = 0; n < 4; n++) {
++		uint32_t te = *(volatile uint32_t *)(m + FAJITA_PP(n) + FAJITA_PP_TEAR_CHECK_EN);
++		uint32_t ar = *(volatile uint32_t *)(m + FAJITA_PP(n) + FAJITA_PP_AUTOREFRESH);
++		IOLog("FAJITA DPU: PP%d tear-check 0x%x autorefresh 0x%08x\n", n, te, ar);
++		if ((te & 1u) && (ar & (1u << 31))) {
++			autorefresh = true;
++		}
++	}
++	volatile uint32_t *ctl = NULL;
++	for (int n = 0; n < 5; n++) {
++		uint32_t top = *(volatile uint32_t *)(m + FAJITA_CTL(n) + FAJITA_CTL_TOP);
++		IOLog("FAJITA DPU: CTL%d top 0x%08x\n", n, top);
++		/* bit 17: command mode; [7:4]: interface (non-zero = in use) */
++		if (ctl == NULL && (top & (1u << 17)) && ((top >> 4) & 0xf)) {
++			ctl = (volatile uint32_t *)(m + FAJITA_CTL(n));
++		}
++	}
++	if (ctl == NULL) {
++		IOLog("FAJITA DPU: no command-mode CTL found (video mode?); no kick\n");
++		return;
++	}
++	if (autorefresh && mode != 2) {
++		IOLog("FAJITA DPU: hardware autorefresh is on (shim); no kick needed\n");
++		return;
++	}
++	fDpuCtl = ctl;
++	IOLog("FAJITA DPU: kicking CTL_START every vsync tick (%s)\n",
++	    mode == 2 ? "fajita_dpu=2" : "autorefresh off");
++}
++
++/* One frame transfer to the panel RAM, unless the previous one still runs. */
++void
++AppleCLCD::dpuKick(void)
++{
++	volatile uint32_t *ctl = fDpuCtl;
++	if (ctl == NULL) {
++		return;
++	}
++	if (ctl[FAJITA_CTL_START / 4] & 1u) {
++		fDpuBusy++;
++		return;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");      /* pixels before the kick */
++	ctl[FAJITA_CTL_START / 4] = 1;
++	if ((++fDpuKicks % 3600) == 0) {
++		IOLog("FAJITA DPU: %llu kicks, %llu skipped busy\n", fDpuKicks, fDpuBusy);
++	}
++}
++
+ void
+ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ {
+@@ -238,6 +350,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 					row[x] = step < 6 ? (row[x] >> 1) & 0x7f7f7f7f : 0;
+ 				}
+ 			}
++			fb->dpuKick();
+ 		}
+ 		sender->setTimeoutUS(SWEET_FB_VSYNC_US);
+ 		return;
+@@ -256,6 +369,8 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 		fb->present(rec);
+ 		IOFreeData(rec, SWEET_FB_SWAP_REC_SIZE);
+ 	}
++	/* Also on idle ticks: the kernel console draws outside present(). */
++	fb->dpuKick();
+ 	sender->setTimeoutUS(SWEET_FB_VSYNC_US);
+ }
+ 

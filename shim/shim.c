@@ -11,9 +11,14 @@
 #include "mmu.h"
 #include "loader.h"
 #include "ufs.h"
+#include "fajita_disp.h"
 
-#define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
-#define RESTART_BOOTLOADER	0x77665500U
+/*
+ * fajita: no IMEM restart-reason write (the SDM845 IMEM layout is not
+ * verified on this phone, and a wrong word there could clobber minidump or
+ * PIL data). PSCI SYSTEM_RESET; PS_HOLD (sdm845 restart@c264000, same as
+ * sweet) only if PSCI ever returns.
+ */
 #define PSHOLD			0x0c264000UL
 
 #define GICD_BASE		0x17a00000UL
@@ -101,12 +106,39 @@ static void delay_ms(unsigned ms)
 		;
 }
 
+static struct fajita_disp disp;	/* .bss: no absolute pointers */
+
+/* Without autorefresh, push the current console to the panel by hand. */
+static void show(void)
+{
+	fajita_disp_kick(&disp);
+}
+
+static void disp_report(int drc)
+{
+	switch (drc) {	/* string table entries would be absolute pointers */
+	case FAJITA_DISP_OK: con_str("DPU", "autorefresh on"); break;
+	case FAJITA_DISP_UNPOWERED: con_str("DPU", "MDSS off, untouched"); break;
+	case FAJITA_DISP_NO_CMD_CTL: con_str("DPU", "no cmd-mode CTL"); break;
+	case FAJITA_DISP_NO_TE: con_str("DPU", "no tear check"); break;
+	default: con_str("DPU", "autorefresh not sticky"); break;
+	}
+	con_hex2("DPU CTL", "n=", (uint32_t)disp.ctl, "top=", disp.ctl_top);
+	con_hex2("DPU PP", "n=", (uint32_t)disp.pp, "sync=", disp.sync_cfg);
+	con_hex2("DPU AR", "was=", disp.ar_before, "now=", disp.ar_after);
+	con_hex2("DISPCC", "gdsc=", disp.gdsc, "mdp=", disp.mdp_cbcr);
+	con_hex("PP LINE", fajita_disp_line(&disp));
+	con_skip();
+	show();
+}
+
 static void __attribute__((noreturn)) reset(unsigned after_s)
 {
+	show();
 	con_skip();
 	con_str("RESET", after_s > 20 ? "in 40s" : "in 20s");
+	show();
 	delay_ms(after_s * 1000);
-	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
 	wr32(PSHOLD, 0);
@@ -374,14 +406,23 @@ void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
 
+	/*
+	 * fajita: the panel is command mode. Turn on DPU autorefresh first, or
+	 * nothing drawn from here on (by us or by XNU) reaches the glass.
+	 */
+	stage = "display";
+	int drc = fajita_disp_autorefresh(&disp);
+
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);
-	con_str("SHIM", "sweet milestone 4: xnu loader");
+	con_str("SHIM", "fajita (OnePlus 6T) xnu loader");
 	con_skip();
+	disp_report(drc);
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
 	con_skip();
+	show();
 
 	/* No payload: probe the internal UFS while the MMU is still off. */
 	stage = "ufs";
@@ -389,6 +430,7 @@ void shim_main(uint64_t dtb)
 	con_skip();
 	/* Keep the probe results on screen (later tests clear it); reset after 3 min. */
 	con_str("UFS", "probe done, reset in ~3 min");
+	show();
 	delay_ms(180000);
 	reset(20);
 
@@ -431,5 +473,6 @@ void shim_main(uint64_t dtb)
 	test_gic();
 
 	stage = "done";
+	show();
 	reset(40);
 }

@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 
-#define FB_PHYS	0x9c000000UL
+#define FB_PHYS	0x9d400000UL	/* fajita splash; its 32MB block starts at 0x9c000000 */
 
 struct mmu_info {
 	uint64_t img_lo, img_hi, ttbr;

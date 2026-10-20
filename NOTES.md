@@ -1,5 +1,16 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> fajita branch (OnePlus 6T, SDM845), 2026-10-19 - read FAJITA.md first <<<
+- Branch `fajita` = upstream ios-sweet 11da58b + fajita shim/tools + kernel patches 0082-0084.
+- NOT booted yet. Shim builds (`shim/build.sh`, Image.gz + appended stock DTB, boot.img v0);
+  0082-0084 apply cleanly on 0001-0081 (verified by applying the series to xnu-8796.141.3 locally).
+  Kernel not built yet (needs the macOS CI run).
+- Observations vs guesses: register addresses are from mainline Linux sdm845*.dtsi, gcc/dispcc-sdm845.c,
+  dpu_4_0_sdm845.h, spmi-pmic-arb.c (core size 0x1100 => arb v5). GUESSES to confirm on hardware:
+  DPU autorefresh trick (command-mode panel), touch reset = GPIO99, L28A vote, cmd-db locator 0xc3f000c,
+  ABL ramdisk placement below hyp_mem 0x85700000.
+- First step on hardware: `shim/build.sh` without payload, `fastboot boot`, read the DPU lines.
+
 ## Agent handoff / active work (2026-10-15, latest)
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<

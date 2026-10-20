@@ -1,0 +1,379 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index a148608..f6b50a7 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -1,6 +1,9 @@
+ /*
+- * Minimal polled SWEET keys. Call once after the scheduler is running.
+- * See hw-report.md: volume-up is PM6150L SID 4, NOT PM6150 SID 0.
++ * Minimal polled keys, fajita (OnePlus 6T, SDM845 + PM8998). Call once after
++ * the scheduler is running. Power is the PM8998 PON KPDPWR bit; the volume
++ * keys are PM8998 GPIO5 (down) and GPIO6 (up), both SID 0, active low with
++ * pull-up (mainline sdm845-oneplus-common.dtsi gpio-keys). RESIN is unused.
++ * The SDM845 SPMI arbiter is v5 at the same addresses as sweet's SM7150.
+  * PMIC access is READ ONLY: the sole MMIO write issues EXT_READL on an
+  * observer channel. No PMIC config, IRQ acknowledge or reset writes exist.
+  */
+@@ -21,11 +24,15 @@ void sweet_keys_init(void);
+ #define KEYS_OBS_PA      0x0e600000u
+ #define KEYS_CNFG_PA     0x0c40a000u
+ #define KEYS_PON_RT      0x0810u
+-#define KEYS_GPIO_RT     0xc110u
++#define KEYS_VOLDN_PPID  0x0c4u   /* SID0 GPIO5 */
++#define KEYS_VOLUP_PPID  0x0c5u   /* SID0 GPIO6 */
++#define KEYS_VOLDN_BASE  0xc400u
++#define KEYS_VOLUP_BASE  0xc500u
++#define KEYS_GPIO_RT     0x10u    /* INT_RT_STS bit 0 = pad level */
+ #define KEYS_NO_APID     0xffffu
+ 
+ static vm_offset_t keys_core, keys_obs, keys_cnfg;
+-static uint16_t keys_pon_apid = KEYS_NO_APID, keys_gpio_apid = KEYS_NO_APID;
++static uint16_t keys_pon_apid = KEYS_NO_APID, keys_up_apid = KEYS_NO_APID, keys_dn_apid = KEYS_NO_APID;
+ static uint32_t keys_version, keys_last_status;
+ static bool keys_started;
+ static int keys_sleep_chan;
+@@ -81,6 +88,31 @@ keys_read(uint16_t apid, uint16_t addr, uint8_t *out)
+ 	return false;
+ }
+ 
++/*
++ * GPIO configuration belongs to firmware (ABL leaves the volume pads as
++ * pulled-up inputs). Diagnose, never repair it here: a pad that is not an
++ * enabled input is withheld so a floating level cannot press a key.
++ */
++static uint16_t
++keys_check_gpio(const char *name, uint16_t apid, uint16_t base)
++{
++	uint8_t level = 0, mode = 0, en = 0, subtype = 0;
++	bool lok = keys_read(apid, base + KEYS_GPIO_RT, &level);
++	bool mok = keys_read(apid, base + 0x40u, &mode);
++	bool eok = keys_read(apid, base + 0x46u, &en);
++	bool sok = keys_read(apid, base + 0x05u, &subtype);
++	unsigned dir = subtype >= 0x10u && subtype <= 0x13u ?
++	    mode & 3u : (mode >> 4) & 7u;
++	printf("SWEET KEYS: %s apid=%u level=%#x/%d mode=%#x/%d en=%#x/%d subtype=%#x/%d\n",
++	    name, apid, level, lok, mode, mok, en, eok, subtype, sok);
++	if (apid == KEYS_NO_APID || !lok || !eok || !mok || !sok || !(en & 0x80u) ||
++	    (dir != 0 && dir != 2)) {
++		printf("SWEET KEYS: %s not confirmed enabled as input; withheld, PMIC unchanged\n", name);
++		return KEYS_NO_APID;
++	}
++	return apid;
++}
++
+ static void
+ keys_wait(void)
+ {
+@@ -98,23 +130,28 @@ keys_thread(void *arg, wait_result_t result)
+ 	(void)arg;
+ 	(void)result;
+ 	for (;;) {
+-		uint8_t pon = 0, gpio = 0;
++		uint8_t pon = 0, up = 1, dn = 1;
+ 		bool pok = keys_read(keys_pon_apid, KEYS_PON_RT, &pon);
+-		bool gok = keys_read(keys_gpio_apid, KEYS_GPIO_RT, &gpio);
+-		int now[3] = {!!(pon & 1u), !(gpio & 1u), !!(pon & 2u)};
+-		if (!pok || !gok) {
++		bool uok = keys_read(keys_up_apid, KEYS_VOLUP_BASE + KEYS_GPIO_RT, &up);
++		bool dok = keys_read(keys_dn_apid, KEYS_VOLDN_BASE + KEYS_GPIO_RT, &dn);
++		/* sweet_hid_key: 0 power, 1 volume up, 2 volume down */
++		int now[3] = {!!(pon & 1u), !(up & 1u), !(dn & 1u)};
++		bool ok[3] = {pok, uok, dok};
++		if ((keys_pon_apid != KEYS_NO_APID && !pok) ||
++		    (keys_up_apid != KEYS_NO_APID && !uok) ||
++		    (keys_dn_apid != KEYS_NO_APID && !dok)) {
+ 			if ((errors++ % 250u) == 0) {
+-				printf("SWEET KEYS: read error pon-ok=%d gpio-ok=%d arb-status=%#x\n",
+-				    pok, gok, keys_last_status);
++				printf("SWEET KEYS: read error pon=%d up=%d down=%d arb-status=%#x\n",
++				    pok, uok, dok, keys_last_status);
+ 			}
+ 		} else {
+ 			errors = 0;
+ 		}
+ 		for (int k = 0; k < 3; ++k) {
+-			if ((k == 1 ? gok : pok) && now[k] != state[k]) {
++			if (ok[k] && now[k] != state[k]) {
+ 				state[k] = now[k];
+-				printf("SWEET KEYS: key=%d down=%d pon=%#x gpio4:c110=%#x\n",
+-				    k, state[k], pon, gpio);
++				printf("SWEET KEYS: key=%d down=%d pon=%#x gpio6=%#x gpio5=%#x\n",
++				    k, state[k], pon, up, dn);
+ 				sweet_hid_key(k, state[k]);
+ 			}
+ 		}
+@@ -152,24 +189,15 @@ sweet_keys_init(void)
+ 		return;
+ 	}
+ 	keys_pon_apid = keys_find_apid(0x008, count);
+-	keys_gpio_apid = keys_find_apid(0x4c1, count);
+-	uint8_t pon = 0, gpio = 0, mode = 0, en = 0, subtype = 0;
++	keys_up_apid = keys_check_gpio("GPIO6 (volume up)", keys_find_apid(KEYS_VOLUP_PPID, count),
++	    KEYS_VOLUP_BASE);
++	keys_dn_apid = keys_check_gpio("GPIO5 (volume down)", keys_find_apid(KEYS_VOLDN_PPID, count),
++	    KEYS_VOLDN_BASE);
++	uint8_t pon = 0;
+ 	bool pok = keys_read(keys_pon_apid, KEYS_PON_RT, &pon);
+-	bool gok = keys_read(keys_gpio_apid, KEYS_GPIO_RT, &gpio);
+-	bool mok = keys_read(keys_gpio_apid, 0xc140, &mode);
+-	bool eok = keys_read(keys_gpio_apid, 0xc146, &en);
+-	bool sok = keys_read(keys_gpio_apid, 0xc105, &subtype);
+-	printf("SWEET KEYS: arb=%#x apids=%u pon-apid=%u gpio4-apid=%u pon=%#x/%d gpio=%#x/%d mode=%#x/%d en=%#x/%d subtype=%#x/%d\n",
+-	    keys_version, count, keys_pon_apid, keys_gpio_apid,
+-	    pon, pok, gpio, gok, mode, mok, en, eok, subtype, sok);
+-	/* GPIO configuration belongs to firmware. Diagnose, never repair it here. */
+-	unsigned dir = subtype >= 0x10u && subtype <= 0x13u ?
+-	    mode & 3u : (mode >> 4) & 7u;
+-	if (!eok || !mok || !sok || !(en & 0x80u) || (dir != 0 && dir != 2)) {
+-		printf("SWEET KEYS: GPIO2 not confirmed enabled as input; volume-up withheld, PMIC unchanged\n");
+-		keys_gpio_apid = KEYS_NO_APID;
+-	}
+-	if (!pok && !gok) {
++	printf("SWEET KEYS: fajita arb=%#x apids=%u pon-apid=%u pon=%#x/%d up-apid=%u down-apid=%u\n",
++	    keys_version, count, keys_pon_apid, pon, pok, keys_up_apid, keys_dn_apid);
++	if (!pok && keys_up_apid == KEYS_NO_APID && keys_dn_apid == KEYS_NO_APID) {
+ 		printf("SWEET KEYS: no readable keys; polling retained for recovery\n");
+ 	}
+ 	kern_return_t kr = kernel_thread_start(keys_thread, NULL, &thread);
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index 4da50d8..6820550 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -1,5 +1,5 @@
+ /*
+- * SWEET PM6150L L11C bring-up; see report.md for DT and source evidence.
++ * RPMh VRM vote for one LDO (sweet: PM6150L L11C; fajita: PM8998 L28A).
+  * Sole XNU apps-DRV owner, called from thread context with deep idle disabled.
+  * No sleep/wake programming, SPMI writes, GIC handler, or timeout recovery.
+  */
+@@ -13,11 +13,19 @@
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ 
+-/* Live downstream DT has two positional reg entries, no reg-names. */
+-#define RH_RSC_PA       0x18220000u
+-#define RH_TCS_PA       0x18220d00u
++/*
++ * fajita (SDM845): apps_rsc drv-2 at 0x179e0000, qcom,tcs-offset 0xd00,
++ * qcom,drv-id 2, tcs-config ACTIVE 2 / SLEEP 3 / WAKE 3 / CONTROL 1 -- the
++ * same geometry as sweet's SM7150, only the base moves. The cmd-db locator
++ * is downstream sdm845's qcom,cmd-db@c3f000c (AOP message RAM); mainline
++ * reserves the DB itself at 0x85fe0000 (aop_cmd_db_mem).
++ */
++#define RH_RSC_PA       0x179e0000u
++#define RH_TCS_PA       0x179e0d00u
+ #define RH_TCS_SIZE     0x3000u
+ #define RH_DICT_PA      0x0c3f000cu
++#define RH_DB_FIXED_PA  0x85fe0000u /* sdm845 aop_cmd_db_mem */
++#define RH_DB_FIXED_SIZE 0x20000u
+ #define RH_DRV          2u
+ #define RH_ACTIVE_N     2u       /* DT order: ACTIVE 2, SLEEP 3, WAKE 3 */
+ #define RH_NORMAL_N     8u       /* hidden CONTROL TCS is not in this bank */
+@@ -132,6 +140,16 @@ rh_map(void)
+ 		uint32_t pa = rh_read(rh_dict, 0);
+ 		uint32_t size = rh_read(rh_dict, 4);
+ 		printf("SWEET RPMH: cmd-db locator=%#x pa=%#x size=%#x\n", RH_DICT_PA, pa, size);
++		/*
++		 * fajita: if the AOP locator does not hold a DB pointer, use the
++		 * fixed SDM845 carve-out (aop_cmd_db_mem, mainline sdm845.dtsi).
++		 * The magic/version check below still has to pass.
++		 */
++		if (pa != RH_DB_FIXED_PA && (pa < 0x80000000u || size < RH_DB_HEADER || size > RH_DB_MAX)) {
++			printf("SWEET RPMH: locator unusable, trying fixed cmd-db %#x\n", RH_DB_FIXED_PA);
++			pa = RH_DB_FIXED_PA;
++			size = RH_DB_FIXED_SIZE;
++		}
+ 		/* Firmware supplies the reserved RAM address; never scan physical RAM. */
+ 		if (pa < 0x80000000u || (pa & 3u) || (size & 3u) ||
+ 		    size < RH_DB_HEADER || size > RH_DB_MAX ||
+@@ -320,16 +338,21 @@ rh_send(uint32_t address, unsigned mv)
+ 		return EIO;
+ 	}
+ 	rh_poisoned = false;
+-	printf("SWEET RPMH: L11C ACTIVE vote complete (rail voltage requires hardware verification)\n");
++	printf("SWEET RPMH: L28A ACTIVE vote complete (rail voltage requires hardware verification)\n");
+ 	return 0;
+ }
+ 
+ int
+ sweet_rpmh_vreg_enable(const char *res, unsigned mv)
+ {
+-	/* Board-specific helper: do not apply PMIC5-LDO policy to arbitrary resources. */
+-	if (!res || strcmp(res, "ldoc11") || mv < 2950 || mv > 3400) {
+-		printf("SWEET RPMH: expected ldoc11 and 2950..3400 mV\n");
++	/*
++	 * Board-specific helper: do not apply LDO policy to arbitrary resources.
++	 * fajita: PM8998 L28A feeds the touch IC's VDD (vreg_l28a_3p0,
++	 * 2856..3008 mV in sdm845-oneplus-common.dtsi). PMIC4 LDO HPM is mode 7,
++	 * the same value the PMIC5 path below sends.
++	 */
++	if (!res || strcmp(res, "ldoa28") || mv < 2856 || mv > 3008) {
++		printf("SWEET RPMH: expected ldoa28 and 2856..3008 mV\n");
+ 		return EINVAL;
+ 	}
+ 	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index b6c1a41..8bf9eaa 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -47,17 +47,18 @@ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ #define GCC_USB30_PRIM_GDSCR    0x0f004         /* bit 31: power on */
+ #define CBCR_CLK_OFF            (1u << 31)
+ 
++/* fajita: SDM845 offsets (Linux gcc-sdm845.c); sweet's SM7150 ones differ */
+ static const struct {
+ 	const char *name;
+ 	uint32_t    off;
+ } usb_cbcr[] = {
+-	{ "master", 0x0f010 },
+-	{ "sleep", 0x0f014 },
+-	{ "utmi", 0x0f018 },
++	{ "master", 0x0f00c },
++	{ "sleep", 0x0f010 },
++	{ "utmi", 0x0f014 },
+ 	{ "cfg-noc-axi", 0x0502c },
+ 	{ "aggre-axi", 0x8201c },
+ 	{ "ahb2phy", 0x6a004 },
+-	{ "clkref", 0x8c010 },
++	{ "clkref", 0x8c008 },
+ };
+ 
+ #define DWC3_PA                 0x0a600000
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 9969739..37407b2 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -105,7 +105,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	const unsigned capacity = (5020u * percent + 50u) / 100u;
+ 	setBatteryInstalled(true);
+ 	setCurrentCapacity(capacity);
+-	setMaxCapacity(5020);
++	setMaxCapacity(3700);	/* fajita: 3700 mAh */
+ 	setExternalConnected(external);
+ 	setExternalChargeCapable(capable);
+ 	setIsCharging(charging);
+@@ -119,8 +119,8 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	putBool("FullyCharged", full);
+ 	putBool("AppleRawExternalConnected", external);
+ 	putNumber("AppleRawCurrentCapacity", capacity);
+-	putNumber("AppleRawMaxCapacity", 5020);
+-	putNumber("DesignCapacity", 5020);
++	putNumber("AppleRawMaxCapacity", 3700);
++	putNumber("DesignCapacity", 3700);
+ 	putNumber("InstantAmperage", (UInt32)ma);
+ 	/* iOS battery convention: centidegrees C; fixed 25 C, NOT measured. */
+ 	putNumber("Temperature", 2500);
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+index 2545cf9..de1d712 100644
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -82,7 +82,7 @@ SweetCPU::start(IOService *provider)
+ 	if (!IOCPU::start(provider)) {
+ 		return false;
+ 	}
+-	cpuName = OSSymbol::withCStringNoCopy("Kryo 470");
++	cpuName = OSSymbol::withCStringNoCopy("Kryo 385");
+ 	if (cpuName == NULL) {
+ 		return false;
+ 	}
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index 27bc49d..7550823 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -356,6 +356,9 @@ OSDefineMetaClassAndStructors(SweetHIDButtons, IOHIDEventService);
+  * app-switcher gesture.
+  */
+ #define SWEET_TOUCH_EDGE_PX 48
++/* fajita (OnePlus 6T, s6e3fc2x01 AMS641RW): panel pixels the digitizer reports in */
++#define SWEET_PANEL_W 1080
++#define SWEET_PANEL_H 2340
+ class SweetHIDTouch : public IOHIDEventService {
+ 	OSDeclareDefaultStructors(SweetHIDTouch);
+ public:
+@@ -434,14 +437,15 @@ SweetHIDTouch::start(IOService *provider)
+ 	}
+ 	int native = 0;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+-	fLogicalW = native ? 1080 : 1125;
+-	fLogicalH = native ? 2400 : 2436;
+-	fOffX = (fLogicalW - 1080) / 2;
+-	fOffY = (fLogicalH - 2400) / 2;
++	/* fajita (OnePlus 6T): 1080x2340 panel centred in the iPhone X canvas */
++	fLogicalW = native ? SWEET_PANEL_W : 1125;
++	fLogicalH = native ? SWEET_PANEL_H : 2436;
++	fOffX = (fLogicalW - SWEET_PANEL_W) / 2;
++	fOffY = (fLogicalH - SWEET_PANEL_H) / 2;
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */
+ 	setProperty("DisplayIntegrated", kOSBooleanTrue);
+ 	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */
+-	setProperty("SurfaceHeight", (unsigned long long)(151 << 16), 32);
++	setProperty("SurfaceHeight", (unsigned long long)(148 << 16), 32);	/* fajita rmi4_f12 */
+ 	gSweetTouch = this;
+ 	registerService();
+ 	IOLog("SWEET HID: touch registered\n");
+@@ -458,8 +462,8 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 	if (finger < 0 || finger >= SWEET_TOUCH_FINGERS) {
+ 		return;
+ 	}
+-	x = x < 0 ? 0 : (x > 1079 ? 1079 : x);
+-	y = y < 0 ? 0 : (y > 2399 ? 2399 : y);
++	x = x < 0 ? 0 : (x > SWEET_PANEL_W - 1 ? SWEET_PANEL_W - 1 : x);
++	y = y < 0 ? 0 : (y > SWEET_PANEL_H - 1 ? SWEET_PANEL_H - 1 : y);
+ 
+ 	IOLockLock(fLock);
+ 	bool was = fDown[finger];
+@@ -472,8 +476,8 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 		return;
+ 	}
+ 	if (!was && down) {
+-		fEdge[finger] = x < SWEET_TOUCH_EDGE_PX || x > 1079 - SWEET_TOUCH_EDGE_PX ||
+-		    y < SWEET_TOUCH_EDGE_PX || y > 2399 - SWEET_TOUCH_EDGE_PX;
++		fEdge[finger] = x < SWEET_TOUCH_EDGE_PX || x > SWEET_PANEL_W - 1 - SWEET_TOUCH_EDGE_PX ||
++		    y < SWEET_TOUCH_EDGE_PX || y > SWEET_PANEL_H - 1 - SWEET_TOUCH_EDGE_PX;
+ 	}
+ 
+ 	collection = IOHIDEvent::digitizerEvent(now, 0, kIOHIDDigitizerTransducerTypeHand, false, 0, 0, 0);
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index 023086f..671adcb 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -514,8 +514,11 @@ LEXT(start_first_cpu)
+ 	mov		x21, #0
+ 
+ #if defined(SWEET)
+-	/* Stage 0: white 64x32 band, no stack or page tables needed. */
+-	MOV64	x0, (0x9c000000 + 2368 * 4320)
++	/*
++	 * Stage 0: white 64x32 band, no stack or page tables needed.
++	 * fajita (OnePlus 6T): splash at 0x9d400000, 1080x2340, last 32 rows.
++	 */
++	MOV64	x0, (0x9d400000 + 2308 * 4320)
+ 	mov		w1, #-1
+ 	mov		x2, #32
+ 	mov		x4, #4320
+@@ -685,6 +688,8 @@ Lkernelcache_base_found:
+ 	 * create_bootstrap_mapping would replace the RAM L2 table.
+ 	 * SWEET uses 16K pages and all bring-up RAM is below 4GB, so the first
+ 	 * V=P L2 page is bootstrap_pagetables + 2*PGBYTES.
++	 * fajita: the splash (0x9d400000, 1080x2340x4 = 0x9a5100 bytes) lies in
++	 * the 32MB block at 0x9c000000, so the same block entry covers it.
+ 	 */
+ 	MOV64	x10, 0x9c000000
+ 	MOV64	x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index 6928957..f500029 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -11,10 +11,10 @@
+ #include <stdint.h>
+ #include <kern/misc_protos.h>
+ 
+-static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x9c000000;
++static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x9d400000;	/* fajita splash */
+ #define EARLY_FB early_fb
+ #define EARLY_WIDTH 1080u
+-#define EARLY_HEIGHT 2400u
++#define EARLY_HEIGHT 2340u
+ #define EARLY_STRIDE (4320u / 4)
+ #define EARLY_SCALE 2u
+ #define EARLY_CELL_W (8u * EARLY_SCALE)
