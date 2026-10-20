@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
-index 03defe6..2f1b9c1 100644
+index 03defe6..5f5d40c 100644
 --- a/bsd/dev/sweet_touch.c
 +++ b/bsd/dev/sweet_touch.c
 @@ -1,9 +1,19 @@
@@ -27,7 +27,7 @@ index 03defe6..2f1b9c1 100644
   */
  #if defined(ARM64_BOARD_CONFIG_SWEET)
  #include <sys/param.h>
-@@ -22,21 +32,25 @@ extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+@@ -22,21 +32,31 @@ extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
  extern void sweet_hid_touch(int finger, int down, int x, int y);
  void sweet_touch_init(void);
  
@@ -40,7 +40,13 @@ index 03defe6..2f1b9c1 100644
 +#define TOUCH_NORTH_PA   0x03900000u /* TLMM 0x3400000 + NORTH 0x500000 */
 +#define TOUCH_EAST_PA    0x03500000u /* TLMM 0x3400000 + EAST 0x100000 */
 +#define TOUCH_GCC_VOTE   0x5200cu    /* APCS_CLOCK_BRANCH_ENA_VOTE_1 */
-+#define TOUCH_GCC_MASK   ((0x0fu << 18) | (1u << 26)) /* wrap1 core2x/core/m/s + S4 */
++/*
++ * gcc-sdm845.c: wrap1 m-ahb bit 20 (halt 0x1800c), s-ahb bit 21 (halt
++ * 0x18010), SE4 bit 26 (halt 0x184d4). Unlike SM7150, SDM845 has no wrap1
++ * core/core2x branches in this register (downstream i2c@a90000 only uses
++ * se/m-ahb/s-ahb), so bits 18/19 are left alone.
++ */
++#define TOUCH_GCC_MASK   ((3u << 20) | (1u << 26))
 +#define TOUCH_RCG        0x184d8u    /* gcc_qupv3_wrap1_s4_clk_src */
  #define TOUCH_GPIO_CFG(n) ((uint32_t)(n) * 0x1000u)
  #define TOUCH_GPIO_IO(n)  (TOUCH_GPIO_CFG(n) + 4u)
@@ -64,7 +70,7 @@ index 03defe6..2f1b9c1 100644
  
  #define SE_STATUS       0x040u
  #define SE_MCLK         0x048u
-@@ -71,13 +85,45 @@ void sweet_touch_init(void);
+@@ -71,13 +91,46 @@ void sweet_touch_init(void);
  #define SE_PACK0        0x0007f8feu
  #define SE_PACK1        0x000ffefeu
  
@@ -108,11 +114,12 @@ index 03defe6..2f1b9c1 100644
 +	unsigned data1_skip;  /* bytes before data1 in that read */
 +	unsigned objects;     /* F12 data1 subpackets (fingers) */
 +	unsigned max_x, max_y;
-+	bool fallback;
++	unsigned irq_regs;    /* bytes of F01 interrupt status: (sum of irq counts + 7) / 8 */
++	bool have_f01, have_f12, fallback;
  } st;
  static int touch_sleep_chan;
  
-@@ -119,26 +165,26 @@ touch_wait_clear(vm_offset_t base, uint32_t off, uint32_t mask)
+@@ -119,26 +172,26 @@ touch_wait_clear(vm_offset_t base, uint32_t off, uint32_t mask)
  }
  
  static void
@@ -147,17 +154,17 @@ index 03defe6..2f1b9c1 100644
  	uint32_t dfs = touch_rd(st.gcc, TOUCH_RCG + 0x14u);
  	uint32_t cfg = touch_rd(st.gcc, TOUCH_RCG + 4u);
  	printf("SWEET TOUCH: gcc vote=%#x rcg=%#x cfg=%#x dfs=%#x\n",
-@@ -160,7 +206,8 @@ touch_clocks(void)
+@@ -160,7 +213,8 @@ touch_clocks(void)
  			return false;
  		}
  	}
 -	const uint32_t branches[] = {0x18004, 0x18008, 0x1800c, 0x18010, 0x18144};
-+	/* wrap1 core 2x, core, m-ahb, s-ahb, then the SE4 branch (= RCG - 4) */
-+	const uint32_t branches[] = {0x18004, 0x18008, 0x1800c, 0x18010, TOUCH_RCG - 4u};
++	/* wrap1 m-ahb, s-ahb, then the SE4 branch (= RCG - 4) */
++	const uint32_t branches[] = {0x1800c, 0x18010, TOUCH_RCG - 4u};
  	for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
  		if (!touch_wait_clear(st.gcc, branches[i], 1u << 31)) {
  			printf("SWEET TOUCH: GCC branch %#x halted (%#x)\n", branches[i],
-@@ -218,7 +265,7 @@ touch_msg_run(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx,
+@@ -218,7 +272,7 @@ touch_msg_run(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx,
  		return EIO;
  	}
  	if (!touch_wait_clear(st.se, SE_STATUS, 1u)) {
@@ -166,7 +173,7 @@ index 03defe6..2f1b9c1 100644
  		return EBUSY;
  	}
  	touch_wr(st.se, SE_IRQ_CLR, 0xffffffffu);
-@@ -317,54 +364,6 @@ touch_read(uint8_t addr, uint16_t reg, bool wide, uint8_t *buf, unsigned len)
+@@ -317,54 +371,6 @@ touch_read(uint8_t addr, uint16_t reg, bool wide, uint8_t *buf, unsigned len)
  	return touch_msg(addr, NULL, 0, buf, len, false);
  }
  
@@ -221,7 +228,7 @@ index 03defe6..2f1b9c1 100644
  static void
  touch_report(uint32_t mask, const int *x, const int *y)
  {
-@@ -383,116 +382,12 @@ touch_report(uint32_t mask, const int *x, const int *y)
+@@ -383,116 +389,12 @@ touch_report(uint32_t mask, const int *x, const int *y)
  	st.active = mask;
  }
  
@@ -339,7 +346,7 @@ index 03defe6..2f1b9c1 100644
  	    fw, (fw >> 8) & 0xffu, touch_rd(st.se, SE_STATUS), tx, rx,
  	    touch_rd(st.se, 0x908));
  	if (((fw >> 8) & 0xffu) != 3u || (touch_rd(st.se, 0x64) & 1u) ||
-@@ -502,7 +397,7 @@ touch_se_init(void)
+@@ -502,7 +404,7 @@ touch_se_init(void)
  		return false;
  	}
  	if (touch_rd(st.se, SE_STATUS) & 0x1001u) {
@@ -348,7 +355,7 @@ index 03defe6..2f1b9c1 100644
  		return false;
  	}
  	touch_wr(st.se, 0xe18, 0); /* no GSI events */
-@@ -516,8 +411,16 @@ touch_se_init(void)
+@@ -516,8 +418,16 @@ touch_se_init(void)
  	touch_wr(st.se, 0x24, 0x7f);
  	touch_wr(st.se, 0x20, 1);
  	touch_wr(st.se, SE_CLK_SEL, 0);
@@ -367,7 +374,7 @@ index 03defe6..2f1b9c1 100644
  	/* Linux 8-bit I2C packing: MSB on the wire, LSB byte first in FIFO. */
  	touch_wr(st.se, 0x254, 0);
  	touch_wr(st.se, 0x260, SE_PACK0);
-@@ -545,77 +448,385 @@ touch_se_init(void)
+@@ -545,77 +455,404 @@ touch_se_init(void)
  	return true;
  }
  
@@ -423,6 +430,7 @@ index 03defe6..2f1b9c1 100644
 +rmi_scan_pdt(void)
 +{
 +	bool f34_boot = false;
++	unsigned irqs = 0;
 +	for (unsigned page = 0; page < RMI_PAGES; ++page) {
 +		unsigned base = page * 0x100u, found = 0;
 +		/* signed: the scan steps below RMI_PDT_END before it stops */
@@ -439,18 +447,31 @@ index 03defe6..2f1b9c1 100644
 +			printf("SWEET TOUCH: PDT page %u F%02x query=%#x ctrl=%#x data=%#x cmd=%#x irqs=%u ver=%u\n",
 +			    page, e[5], base + e[0], base + e[2], base + e[3], base + e[1],
 +			    e[4] & 7u, (e[4] >> 5) & 3u);
-+			if (e[5] == 0x01 && !st.f01_ctrl) {
++			/* base address 0x00 is legal: track presence separately */
++			bool dup = (e[5] == 0x01 && st.have_f01) || (e[5] == 0x12 && st.have_f12);
++			if (!dup) {
++				irqs += e[4] & 7u;
++			}
++			if (e[5] == 0x01 && !st.have_f01) {
++				st.have_f01 = true;
 +				st.f01_query = (uint16_t)(base + e[0]);
 +				st.f01_ctrl = (uint16_t)(base + e[2]);
 +				st.f01_data = (uint16_t)(base + e[3]);
-+			} else if (e[5] == 0x12 && !st.f12_data) {
++				uint8_t status = 0;
++				/* rmi_check_bootloader_mode: F01 data0 bit 6 */
++				if (!rmi_read(st.f01_data, &status, 1) && (status & 0x40u)) {
++					f34_boot = true;
++				}
++			} else if (e[5] == 0x12 && !st.have_f12) {
++				st.have_f12 = true;
 +				st.f12_query = (uint16_t)(base + e[0]);
 +				st.f12_ctrl = (uint16_t)(base + e[2]);
 +				st.f12_data = (uint16_t)(base + e[3]);
 +			} else if (e[5] == 0x34 && ((e[4] >> 5) & 3u) > 1) {
 +				uint8_t status = 0;
-+				if (!rmi_read((uint16_t)(base + e[3]), &status, 1) && (status & 0x40u)) {
-+					f34_boot = true; /* rmi_check_bootloader_mode */
++				/* rmi_check_bootloader_mode: F34 v2+ data0 bit 7 */
++				if (!rmi_read((uint16_t)(base + e[3]), &status, 1) && (status & 0x80u)) {
++					f34_boot = true;
 +				}
 +			}
 +		}
@@ -462,7 +483,11 @@ index 03defe6..2f1b9c1 100644
 +		printf("SWEET TOUCH: controller is in its bootloader (no firmware?); stopping\n");
 +		return false;
 +	}
-+	return st.f01_ctrl && st.f12_data;
++	st.irq_regs = (irqs + 7u) / 8u;
++	if (st.irq_regs == 0 || st.irq_regs > 4) {
++		st.irq_regs = 1;
++	}
++	return st.have_f01 && st.have_f12;
 +}
 +
 +/* rmi_driver.c rmi_read_register_desc + rmi_parse_register_desc_item */
@@ -502,17 +527,18 @@ index 03defe6..2f1b9c1 100644
 +			if (pos >= struct_size || d->n >= RMI_REGS_MAX) {
 +				return d->n != 0;
 +			}
++			/* A truncated item ends the parse; keep the ones before it (Linux). */
 +			unsigned size = sbuf[pos++];
 +			if (size == 0) {
 +				if (pos + 2 > struct_size) {
-+					return false;
++					return d->n != 0;
 +				}
 +				size = sbuf[pos] | ((unsigned)sbuf[pos + 1] << 8);
 +				pos += 2;
 +			}
 +			if (size == 0) {
 +				if (pos + 4 > struct_size) {
-+					return false;
++					return d->n != 0;
 +				}
 +				size = sbuf[pos] | ((unsigned)sbuf[pos + 1] << 8) |
 +				    ((unsigned)sbuf[pos + 2] << 16) | ((unsigned)sbuf[pos + 3] << 24);
@@ -523,7 +549,7 @@ index 03defe6..2f1b9c1 100644
 +			unsigned bit = 0;
 +			do {
 +				if (pos >= struct_size) {
-+					return false;
++					return d->n != 0;
 +				}
 +				uint8_t v = sbuf[pos++];
 +				for (unsigned k = 0; k < 7; ++k, ++bit) {
@@ -660,11 +686,11 @@ index 03defe6..2f1b9c1 100644
 +static int
 +touch_rmi_poll(void)
 +{
-+	uint8_t buf[TOUCH_READ_MAX], irq[2];
++	uint8_t buf[TOUCH_READ_MAX], irq[4];
 +	int x[TOUCH_MAX] = {0}, y[TOUCH_MAX] = {0};
 +	uint32_t mask = 0;
 +	/* Reading F01's interrupt status releases the attention line. */
-+	(void)rmi_read((uint16_t)(st.f01_data + 1u), irq, sizeof(irq));
++	(void)rmi_read((uint16_t)(st.f01_data + 1u), irq, st.irq_regs);
 +	int err = rmi_read(st.data1_addr, buf, st.data1_skip + st.objects * F12_OBJ_BYTES);
 +	if (err) {
 +		return err;

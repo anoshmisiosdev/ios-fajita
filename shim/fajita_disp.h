@@ -7,11 +7,15 @@ enum {
 	FAJITA_DISP_NO_CMD_CTL,		/* no command-mode CTL (video mode panel?) */
 	FAJITA_DISP_NO_TE,		/* no ping-pong with tear check enabled */
 	FAJITA_DISP_NOT_STICKY,		/* write did not read back */
+	FAJITA_DISP_OTHER_BUFFER,	/* autorefresh on, but no pipe fetches the splash */
 };
 
+#define FAJITA_SPLASH	0x9d400000U
+
 struct fajita_disp {
-	uint32_t gdsc, mdp_cbcr, ahb_cbcr;
-	int ctl, pp;
+	uint32_t gdsc, cfg_gdsc, mdp_cbcr, ahb_cbcr;
+	int ctl, pp, pipe;
+	uint32_t src, ystride;
 	uint32_t ctl_top, sync_cfg, ar_before, ar_after;
 };
 

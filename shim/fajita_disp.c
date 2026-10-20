@@ -13,7 +13,9 @@
  * pulse, so the panel behaves like video mode for everything that follows
  * (this console, XNU's early console, fbcon, CoreAnimation frames). ABL
  * already configured the whole pipe (SSPP -> LM -> PP -> INTF -> DSI) and
- * tear check; we only set PP_AUTOREFRESH_CONFIG and kick CTL_START once.
+ * tear check; we only set PP_AUTOREFRESH_CONFIG. As downstream SDE
+ * (sde_encoder_phys_cmd.c) does, CTL_START is never written while
+ * autorefresh is on: the panel's TE pulses drive the transfers.
  *
  * Register offsets: Linux drivers/gpu/drm/msm/disp/dpu1 (dpu_4_0_sdm845.h,
  * dpu_hw_pingpong.c, dpu_hw_ctl.c) and drivers/clk/qcom/dispcc-sdm845.c.
@@ -37,6 +39,10 @@
 #define PP_SYNC_CONFIG_VSYNC	0x04	/* bit 19: vsync counter enable */
 #define PP_LINE_COUNT		0x2c
 #define PP_AUTOREFRESH_CONFIG	0x30	/* bit 31 enable, [15:0] TE pulses per frame */
+/* source pipes (dpu_4_0_sdm845.h): VIG0-3, DMA0-3 */
+#define SSPP_SRC0_ADDR		0x14
+#define SSPP_SRC_YSTRIDE0	0x24
+#define DISPCC_MDSS_CFG_GDSCR	0x3004	/* bit 16: power-on status (POLL_CFG_GDSCR) */
 
 static inline uint32_t rd(uintptr_t a) { return *(volatile uint32_t *)a; }
 static inline void wr(uintptr_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
@@ -46,7 +52,8 @@ int fajita_disp_autorefresh(struct fajita_disp *d)
 	d->gdsc = rd(DISPCC_BASE + DISPCC_MDSS_GDSCR);
 	d->mdp_cbcr = rd(DISPCC_BASE + DISPCC_MDP_CBCR);
 	d->ahb_cbcr = rd(DISPCC_BASE + DISPCC_AHB_CBCR);
-	d->pp = d->ctl = -1;
+	d->cfg_gdsc = rd(DISPCC_BASE + DISPCC_MDSS_CFG_GDSCR);
+	d->pp = d->ctl = d->pipe = -1;
 	/* An access to a powered-down or unclocked block hangs the bus. */
 	if (!(d->gdsc & (1U << 31)) || (d->mdp_cbcr & (1U << 31)) || (d->ahb_cbcr & (1U << 31)))
 		return FAJITA_DISP_UNPOWERED;
@@ -66,19 +73,32 @@ int fajita_disp_autorefresh(struct fajita_disp *d)
 			d->ar_before = rd(PP(n) + PP_AUTOREFRESH_CONFIG);
 		}
 	}
+	/*
+	 * Which pipe fetches the splash? If none, ABL's screen (e.g. the
+	 * fastboot menu) scans another buffer and our pixels stay invisible.
+	 */
+	static const uint32_t sspp[8] = {0x4000, 0x6000, 0x8000, 0xa000,
+		0x24000, 0x26000, 0x28000, 0x2a000};
+	for (int n = 0; n < 8; n++) {
+		uint32_t src = rd(MDP_BASE + sspp[n] + SSPP_SRC0_ADDR);
+		if (d->pipe < 0 && src == FAJITA_SPLASH) {
+			d->pipe = n;
+			d->src = src;
+			d->ystride = rd(MDP_BASE + sspp[n] + SSPP_SRC_YSTRIDE0) & 0xffff;
+		}
+	}
 	if (d->ctl < 0)
 		return FAJITA_DISP_NO_CMD_CTL;	/* video mode (or nothing lit): nothing to do */
 	if (d->pp < 0)
 		return FAJITA_DISP_NO_TE;
 
-	/* One frame per TE pulse (~60 Hz), then start the pipe once. */
+	/* One frame per TE pulse (~60 Hz); no CTL_START (downstream SDE). */
 	wr(PP(d->pp) + PP_AUTOREFRESH_CONFIG, (1U << 31) | 1);
 	__asm__ volatile("dsb sy" ::: "memory");
-	if (!(rd(CTL(d->ctl) + CTL_START) & 1))
-		wr(CTL(d->ctl) + CTL_START, 1);
-	__asm__ volatile("dsb sy" ::: "memory");
 	d->ar_after = rd(PP(d->pp) + PP_AUTOREFRESH_CONFIG);
-	return (d->ar_after & (1U << 31)) ? FAJITA_DISP_OK : FAJITA_DISP_NOT_STICKY;
+	if (!(d->ar_after & (1U << 31)))
+		return FAJITA_DISP_NOT_STICKY;
+	return d->pipe < 0 ? FAJITA_DISP_OTHER_BUFFER : FAJITA_DISP_OK;
 }
 
 /*

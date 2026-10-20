@@ -46,6 +46,8 @@ def boot_kernel_and_dtb(img):
         raise SystemExit('not an Android boot image (no ANDROID! magic)')
     ksize, kaddr, rsize, raddr, ssize, saddr, tags, page = struct.unpack_from('<8I', img, 8)
     hver = struct.unpack_from('<I', img, 40)[0]
+    if 3 <= hver < 16:
+        raise SystemExit(f'boot.img header v{hver}: not a 6T stock image (v3+ keep the DTB in vendor_boot)')
     pages = lambda n: (n + page - 1) // page * page
     koff = page
     kernel = img[koff:koff + ksize]
@@ -68,9 +70,10 @@ def appended(kernel):
         print(f'kernel: gzip, Image {len(image)} bytes, {len(tail)} bytes after the stream')
         return tail
     if kernel[56:60] == b'ARM\x64':
-        image_size = struct.unpack_from('<Q', kernel, 16)[0]
-        print(f'kernel: raw Image, header image_size {image_size}')
-        return kernel[min(image_size, len(kernel)):] if image_size else kernel
+        # image_size includes .bss, so it can point past the appended DTBs:
+        # scan the whole kernel instead (split_dtbs checks every candidate).
+        print('kernel: raw Image, scanning it for appended DTBs')
+        return kernel
     raise SystemExit('kernel is neither gzip nor an arm64 Image')
 
 

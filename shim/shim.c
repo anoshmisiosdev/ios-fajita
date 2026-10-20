@@ -107,11 +107,17 @@ static void delay_ms(unsigned ms)
 }
 
 static struct fajita_disp disp;	/* .bss: no absolute pointers */
+static int disp_rc = -1;
 
-/* Without autorefresh, push the current console to the panel by hand. */
+/*
+ * Without autorefresh, push the current console to the panel by hand.
+ * Never while autorefresh runs (downstream SDE never issues CTL_START then).
+ */
 static void show(void)
 {
-	fajita_disp_kick(&disp);
+	if (disp_rc != FAJITA_DISP_OK && disp_rc != FAJITA_DISP_OTHER_BUFFER &&
+	    disp_rc != FAJITA_DISP_UNPOWERED)
+		fajita_disp_kick(&disp);
 }
 
 static void disp_report(int drc)
@@ -121,12 +127,15 @@ static void disp_report(int drc)
 	case FAJITA_DISP_UNPOWERED: con_str("DPU", "MDSS off, untouched"); break;
 	case FAJITA_DISP_NO_CMD_CTL: con_str("DPU", "no cmd-mode CTL"); break;
 	case FAJITA_DISP_NO_TE: con_str("DPU", "no tear check"); break;
+	case FAJITA_DISP_OTHER_BUFFER: con_str("DPU", "autorefresh on, splash not fetched"); break;
 	default: con_str("DPU", "autorefresh not sticky"); break;
 	}
 	con_hex2("DPU CTL", "n=", (uint32_t)disp.ctl, "top=", disp.ctl_top);
 	con_hex2("DPU PP", "n=", (uint32_t)disp.pp, "sync=", disp.sync_cfg);
 	con_hex2("DPU AR", "was=", disp.ar_before, "now=", disp.ar_after);
-	con_hex2("DISPCC", "gdsc=", disp.gdsc, "mdp=", disp.mdp_cbcr);
+	con_hex2("DPU PIPE", "n=", (uint32_t)disp.pipe, "ystride=", disp.ystride);
+	con_hex2("DISPCC", "gdsc=", disp.gdsc, "cfg=", disp.cfg_gdsc);
+	con_hex2("DISPCC", "mdp=", disp.mdp_cbcr, "ahb=", disp.ahb_cbcr);
 	con_hex("PP LINE", fajita_disp_line(&disp));
 	con_skip();
 	show();
@@ -412,6 +421,7 @@ void shim_main(uint64_t dtb)
 	 */
 	stage = "display";
 	int drc = fajita_disp_autorefresh(&disp);
+	disp_rc = drc;
 
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";

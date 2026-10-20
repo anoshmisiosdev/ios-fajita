@@ -136,7 +136,7 @@ index a148608..f6b50a7 100644
  	}
  	kern_return_t kr = kernel_thread_start(keys_thread, NULL, &thread);
 diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
-index 4da50d8..6820550 100644
+index 4da50d8..33161d4 100644
 --- a/bsd/dev/sweet_rpmh.c
 +++ b/bsd/dev/sweet_rpmh.c
 @@ -1,5 +1,5 @@
@@ -186,6 +186,24 @@ index 4da50d8..6820550 100644
  		/* Firmware supplies the reserved RAM address; never scan physical RAM. */
  		if (pa < 0x80000000u || (pa & 3u) || (size & 3u) ||
  		    size < RH_DB_HEADER || size > RH_DB_MAX ||
+@@ -234,7 +252,7 @@ rh_send(uint32_t address, unsigned mv)
+ 		for (unsigned c = 0; c < rh_ncpt; ++c) {
+ 			if ((enabled & (1u << c)) &&
+ 			    (rh_read(rh_tcs, b + RH_ADDR + c * RH_CMD_STRIDE) & ~15u) == address) {
+-				printf("SWEET RPMH: conflicting inherited L11C request in TCS%u\n", t);
++				printf("SWEET RPMH: conflicting inherited LDO request in TCS%u\n", t);
+ 				return EBUSY;
+ 			}
+ 		}
+@@ -266,7 +284,7 @@ rh_send(uint32_t address, unsigned mv)
+ 	}
+ 	/* From here an uncertain write/timeout quarantines our slot for this boot. */
+ 	rh_poisoned = true;
+-	/* HPM (raw 7) is supported by this PMIC5 LDO; enable comes last. */
++	/* HPM is raw 7 on PMIC4 (fajita) and PMIC5 LDOs; enable comes last. */
+ 	const uint32_t offsets[3] = {0, 8, 4};
+ 	const uint32_t values[3] = {mv, 7, 1};
+ 	printf("SWEET RPMH: TCS%u ACTIVE %u mV mode=7 enable=1 irq-enable=%#x\n", t, mv, irq_en);
 @@ -320,16 +338,21 @@ rh_send(uint32_t address, unsigned mv)
  		return EIO;
  	}
@@ -205,7 +223,7 @@ index 4da50d8..6820550 100644
 +	 * Board-specific helper: do not apply LDO policy to arbitrary resources.
 +	 * fajita: PM8998 L28A feeds the touch IC's VDD (vreg_l28a_3p0,
 +	 * 2856..3008 mV in sdm845-oneplus-common.dtsi). PMIC4 LDO HPM is mode 7,
-+	 * the same value the PMIC5 path below sends.
++	 * the same value sweet's PMIC5 L11C vote sends.
 +	 */
 +	if (!res || strcmp(res, "ldoa28") || mv < 2856 || mv > 3008) {
 +		printf("SWEET RPMH: expected ldoa28 and 2856..3008 mV\n");
@@ -334,7 +352,7 @@ index 27bc49d..7550823 100644
  
  	collection = IOHIDEvent::digitizerEvent(now, 0, kIOHIDDigitizerTransducerTypeHand, false, 0, 0, 0);
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
-index 023086f..671adcb 100644
+index 023086f..46bfe1f 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
 @@ -514,8 +514,11 @@ LEXT(start_first_cpu)
@@ -355,7 +373,7 @@ index 023086f..671adcb 100644
  	 * create_bootstrap_mapping would replace the RAM L2 table.
  	 * SWEET uses 16K pages and all bring-up RAM is below 4GB, so the first
  	 * V=P L2 page is bootstrap_pagetables + 2*PGBYTES.
-+	 * fajita: the splash (0x9d400000, 1080x2340x4 = 0x9a5100 bytes) lies in
++	 * fajita: the splash (0x9d400000, 1080x2340x4 = 0x9a3f80 bytes, ending at 0x9dda3f80) lies in
 +	 * the 32MB block at 0x9c000000, so the same block entry covers it.
  	 */
  	MOV64	x10, 0x9c000000
