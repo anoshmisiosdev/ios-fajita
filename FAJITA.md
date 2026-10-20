@@ -4,6 +4,33 @@ A port of [ios-sweet](https://github.com/dipa-studio/ios-sweet) to the OnePlus 6
 
 > **Status: written and reviewed, not yet booted.** Everything here is built from mainline Linux sources (device trees and drivers) and from the sweet code. Nothing has run on a 6T yet. The shim builds and the kernel patches apply cleanly to the sweet series, but the kernel itself still needs a CI build, and every hardware assumption needs a first boot to confirm it. The boot order below is designed so each step tells you which assumption failed.
 
+## Quick start on a new computer
+
+On Linux (Ubuntu 24.04 tested; Fedora and Arch work with their own package names):
+
+```
+git clone -b fajita https://github.com/anoshmisiosdev/ios-sweet && cd ios-sweet
+./fajita.sh deps          # lists anything missing and the install command; builds apfs-fuse if needed
+gh auth login             # or: export GITHUB_TOKEN=... (needed to download CI artifacts)
+./fajita.sh all
+```
+
+`all` runs these steps, each of which also works on its own and resumes where it stopped:
+
+| Step | What it does | Needs |
+| --- | --- | --- |
+| `kernel` | Downloads the newest successful `xnu` build of this branch from GitHub Actions into `xnu/out/` | `gh` login or `GITHUB_TOKEN` |
+| `ipsw` | Looks up the iPhone X iOS 16.7.16 (20H392) IPSW on ipsw.me and pulls only the needed parts from Apple's CDN (OS image, both cryptexes, BuildManifest, D22AP device tree), ~7 GB, resumable and CRC-checked. `./fajita.sh ipsw BUILD` picks another iOS 16 build; `python3 tools/ipsw-fetch.py x --list` lists them | ~8 GB disk |
+| `root` | Builds `build/ios16-root.img` and the sparse `build/ios16-root.simg` for the phone, with sweet's root tweaks applied | sudo, ~25 GB disk |
+| `qemu-smoke` | Boots the kernel alone in QEMU for a minute (`build/qemu-smoke/out/fb.png`) | — |
+| `qemu-ios` | Makes a trimmed copy of the root, loads it as a RAM disk, boots iOS in QEMU and saves a screenshot every minute to `build/qemu-ios/out/snaps/` | lots of RAM (below) |
+| `phone` | Builds `shim/out/shim-boot.img` for the 6T and prints the fastboot commands. It never runs them | `dtb/fajita-appended.dtb` (step 0 below) |
+
+About `qemu-ios`. It shows what iOS draws, including how the 1125×2436 iPhone X screen is cropped to the 6T's 2340 rows, without touching the phone. It is **experimental**: sweet only ever used QEMU for the kernel, and booting the whole iOS userland from a RAM disk has not been tried yet.
+- **Memory:** the trimmed root is about as large as its contents (~10 GB or more), and the guest gets that plus 3 GB. Expect to need **~32 GB of host RAM**. The script warns when there isn't enough.
+- **Speed:** without hardware acceleration it emulates every instruction and can take hours. On an arm64 Linux host with `/dev/kvm`, or an Apple silicon Mac (`hvf`), it runs on the real CPU (`QEMU_ACCEL=kvm|hvf`; picked automatically). The kernel uses 16K pages, so the host CPU must support them too.
+- **Run length:** `QEMU_SECS` sets how long it runs (default 3 hours).
+
 ## Why the 6T is close to sweet
 
 SDM845 and sweet's SM7150 share most of the I/O map, so most of sweet's drivers keep working unchanged:

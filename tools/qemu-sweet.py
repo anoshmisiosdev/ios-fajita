@@ -2,12 +2,18 @@
 """Boot a SWEETXNU payload (tools/mkpayload.py) in QEMU's virt board.
 
   qemu-sweet.py PAYLOAD OUTDIR [--secs N] [--gdb] [--live-serial]
+               [--snap-every S] [--accel tcg|kvm|hvf] [--smp N]
 
 Does what shim/loader.c does on the phone, but on the host: places the
 kernel segments, ADT and boot_args at their physical addresses and starts
 the CPU at a 6-instruction stub that jumps to the entry with x0 = boot_args.
 virt RAM starts at 0x40000000; with 4G it covers the phone's framebuffer
 (0x9d400000, fajita) and the kernel's phys_base (0xb0000000) as plain memory.
+
+--snap-every S also saves the framebuffer every S seconds while the guest
+runs (OUTDIR/snaps/fb-NNNNNs.png): long iOS boots in QEMU take a while to
+reach SpringBoard. --accel kvm (arm64 Linux host) or hvf (Apple silicon
+Mac) runs the guest on the host CPU (-cpu host) instead of emulating it.
 
 After N seconds (or when the guest stops) it writes into OUTDIR:
   fb.png     the 1080x2340 framebuffer (what the phone screen would show)
@@ -227,6 +233,9 @@ def main():
     ap.add_argument('--kernel', help='matching unstripped kernel, for exact framebuffer text decoding (uses llvm-nm)')
     ap.add_argument('--fail-on-panic', action='store_true', help='exit 2 for a visible panic, 3 for incomplete/blank decoding; requires --kernel')
     ap.add_argument('--live-serial', action='store_true', help='stream serial console output to stdout in real time')
+    ap.add_argument('--snap-every', type=float, default=0, help='also save the framebuffer every S seconds while running (OUTDIR/snaps)')
+    ap.add_argument('--accel', default='tcg', choices=['tcg', 'kvm', 'hvf'], help='tcg (emulation, default), kvm or hvf (host CPU, -cpu host)')
+    ap.add_argument('--smp', type=int, default=1, help='virtual CPUs (pair with the cpus= boot-arg; default 1)')
     ap.add_argument('--check-env', action='store_true', help='check QEMU installation and dependencies without running a payload')
     a = ap.parse_args()
 
@@ -273,7 +282,9 @@ def main():
     # virt RAM starts at 0x40000000: cover the payload's RAM (mkadt.py --highmem needs 8G).
     mem_size = struct.unpack_from('<Q', payload, 0x40)[0]
     ram_gib = max(4, -(-(phys_base + mem_size - 0x40000000) // (1 << 30)))
-    cmd = ['qemu-system-aarch64', '-M', 'virt,gic-version=3', '-cpu', a.cpu, '-smp', '1', '-m', f'{ram_gib}G',
+    cpu = 'host' if a.accel != 'tcg' and a.cpu == 'cortex-a76' else a.cpu
+    cmd = ['qemu-system-aarch64', '-M', 'virt,gic-version=3', '-accel', a.accel, '-cpu', cpu,
+           '-smp', str(a.smp), '-m', f'{ram_gib}G',
            '-nographic', '-serial', f'file:{out}/serial.txt', '-qmp', f'unix:{mon},server,nowait',
            '-d', 'int,guest_errors,unimp', '-D', f'{out}/qemu.log', '-no-reboot',
            '-device', f'loader,file={out}/ram.bin,addr={phys_base:#x},force-raw=on',
@@ -294,9 +305,23 @@ def main():
             return 0
 
         t0 = time.time()
+        next_snap = a.snap_every if a.snap_every > 0 else None
+        if next_snap:
+            os.makedirs(f'{out}/snaps', exist_ok=True)
         while p.poll() is None and time.time() - t0 < a.secs:
             if a.live_serial:
                 serial_pos = stream_serial_file(serial_file, serial_pos)
+            if next_snap and time.time() - t0 >= next_snap:
+                t = int(time.time() - t0)
+                snap_raw = f'{out}/snaps/fb.raw'
+                try:
+                    qmp(mon, pmemsave=(FB_BASE, FB_STRIDE * FB_H, snap_raw))
+                    write_png(f'{out}/snaps/fb-{t:05d}s.png', open(snap_raw, 'rb').read())
+                    os.unlink(snap_raw)
+                    print(f'[*] {t}s: snaps/fb-{t:05d}s.png', file=sys.stderr)
+                except (OSError, ValueError) as e:
+                    print(f'[!] snapshot at {t}s failed: {e}', file=sys.stderr)
+                next_snap += a.snap_every
             time.sleep(0.2)
 
         if a.live_serial:
