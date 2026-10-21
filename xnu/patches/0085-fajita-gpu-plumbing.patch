@@ -1,0 +1,1384 @@
+fajita GPU plumbing (needs bsd/dev/sweet_gpu_a6xx.c, not yet written).
+
+SweetGPU user client, sweet_gpu.h API, IOSurface GPU fixes, sweetenv dylib
+injection, dyld policy, 64 MB io_map, IOKit startup fix: from
+joranv1/ios-sailfish (https://github.com/joranv1/ios-sailfish), unchanged.
+fajita additions: sweet_rpmh_cmd_db_aux() (read-only cmd-db aux data for
+the GMU), build/init hooks for sweet_gpu_a6xx.c, SweetGPU IOKit match.
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 6630131..79d9919 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -108,6 +108,7 @@ bsd/dev/sweet_ufs.c			standard
+ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_touch.c			standard
++bsd/dev/sweet_gpu_a6xx.c		standard
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
+diff --git a/bsd/dev/sweet_gpu.h b/bsd/dev/sweet_gpu.h
+new file mode 100644
+index 0000000..74eeae6
+--- /dev/null
++++ b/bsd/dev/sweet_gpu.h
+@@ -0,0 +1,109 @@
++/*
++ * Adreno 530 kernel API (bsd/dev/sweet_gpu.c), used by the SweetGPU user
++ * client (iokit/Kernel/arm/SweetGPU.cpp). The struct is also the user
++ * client's quad argument, so its layout is ABI.
++ */
++#ifndef _SWEET_GPU_H
++#define _SWEET_GPU_H
++
++#include <sys/cdefs.h>
++#include <stdint.h>
++#include <stdbool.h>
++
++__BEGIN_DECLS
++
++/*
++ * Textured quad: for each pixel (X, Y) of the dst rect (x0, y0, w, h) on
++ * the inner side of the nedges edges (a (X+.5) + b (Y+.5) + c >= 0),
++ * (u, v) = (m[0] m[2]; m[1] m[3]) (X + .5, Y + .5) + (m[4], m[5]) in src
++ * texels (unnormalized), s = bilinear (flags bit 0: nearest) sample of src,
++ * clamped to its edge, channels picked by src_swiz, times color (per
++ * channel); dst = s + dst * (1 - s.a) (source-over; flags SWEET_GPU_QUAD_ADD:
++ * min(s + dst, 1), SWEET_GPU_QUAD_COPY: s). dst is 4 bytes per pixel,
++ * premultiplied, alpha in byte 3 (BGRA8 or RGBA8); src is src_fmt. Images at
++ * GPU VAs from sweet_gpu_vm_map (64-byte aligned); pitches in bytes, multiples
++ * of 64 (the texture unit rounds a pitch up to 64: with any other pitch it
++ * reads past the image, faults and hangs, 0140a). dst must be in a writable
++ * mapping.
++ */
++struct sweet_gpu_quad {
++	uint64_t src_va, dst_va;
++	uint32_t src_w, src_h, src_pitch;
++	uint32_t dst_w, dst_h, dst_pitch;
++	uint32_t x0, y0, w, h;
++	uint32_t m[6];          /* float bits: a, b, c, d, tx, ty */
++	uint32_t reserved;      /* 0 (was opacity: use color) */
++	uint32_t flags;
++	uint32_t color[4];      /* float bits, per channel in memory order */
++	uint32_t src_fmt;       /* SWEET_GPU_FMT_* */
++	uint32_t src_swiz;      /* 4 x 3 bits, channel x first: 0-3 texel x y z w, 4 = 0, 5 = 1 (0x688 = xyzw) */
++	uint32_t nedges;        /* 0-4 */
++	uint32_t edge[4][3];    /* float bits a, b, c */
++};
++
++#define SWEET_GPU_FMT_RGBA8     0u      /* 4 bytes per pixel */
++#define SWEET_GPU_FMT_R8        1u      /* 1 byte */
++#define SWEET_GPU_FMT_RG8       2u      /* 2 bytes */
++
++#define SWEET_GPU_QUAD_NEAREST  1u
++#define SWEET_GPU_QUAD_ADD      2u
++#define SWEET_GPU_QUAD_COPY     4u
++
++/* True once the GPU is up (sweetgpu=8) and accepts work. */
++bool sweet_gpu_ready(void);
++
++/*
++ * Map npages pages (PAGE_SIZE each) at a new GPU VA; 0 on failure. A
++ * read-only mapping can only be a quad source (SMMU entries read-only).
++ */
++uint64_t sweet_gpu_vm_map(const uint64_t *pa, uint32_t npages, bool readonly);
++
++/* Unmap a VA returned by sweet_gpu_vm_map. */
++void sweet_gpu_vm_unmap(uint64_t va);
++
++/*
++ * Run one quad and wait for it; 0 on success, else an errno value. After a
++ * timeout (GPU hung) the service is off until reboot: ENXIO from then on.
++ */
++int sweet_gpu_quad(const struct sweet_gpu_quad *q);
++
++/*
++ * Command submission for user-space drivers (Mesa freedreno through the
++ * SweetGPU user client). Each IB is a CP_INDIRECT_BUFFER_PFE of dwords
++ * dwords at a GPU VA inside a mapping; after them the ring writes the
++ * submit's sequence number to the fence page (CACHE_FLUSH_TS). Returns 0
++ * and the sequence number, ENXIO (GPU off), EINVAL, EFAULT (IB outside the
++ * mapped window) or ETIMEDOUT (ring full for 500 ms: hung, service off).
++ */
++struct sweet_gpu_ib {
++	uint64_t iova;
++	uint32_t dwords;
++	uint32_t pad;
++};
++#define SWEET_GPU_MAX_IBS       256u
++
++int sweet_gpu_submit(const struct sweet_gpu_ib *ib, uint32_t n, uint32_t *seqno);
++
++/*
++ * Wait until submit seqno has completed: 0, ETIMEDOUT after timeout_ms, or
++ * ENXIO (GPU off; also when the fence has not moved for 2 s with work
++ * outstanding: the GPU is declared hung and the service goes off).
++ */
++int sweet_gpu_wait(uint32_t seqno, uint32_t timeout_ms);
++
++struct sweet_gpu_info {
++	uint32_t chip_id;               /* core << 24 | major << 16 | minor << 8 | patch */
++	uint32_t gmem_size;
++	uint64_t gmem_base;
++	uint64_t max_freq;              /* Hz */
++	uint64_t fence_pa;              /* page: u32 last completed seqno at +0 */
++};
++
++void sweet_gpu_get_info(struct sweet_gpu_info *info);
++
++/* The fence page (SweetGPU allocates it so that it can map it into clients). */
++void sweet_gpu_set_fence_page(uintptr_t kva, uint64_t pa);
++
++__END_DECLS
++
++#endif /* _SWEET_GPU_H */
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index 33161d4..e20885d 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -12,6 +12,7 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
++int sweet_rpmh_cmd_db_aux(const char *res, uint8_t *buf, uint32_t max, uint32_t *len);
+ 
+ /*
+  * fajita (SDM845): apps_rsc drv-2 at 0x179e0000, qcom,tcs-offset 0xd00,
+@@ -378,4 +379,63 @@ out:
+ 	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
+ 	return error;
+ }
++/*
++ * Read-only cmd-db query for the Adreno GMU (bsd/dev/sweet_gpu_a6xx.c): the
++ * aux data of one resource of any slave (ARC "gfx.lvl" / "mx.lvl" / "cx.lvl"
++ * hold the u16 RPMh levels of each corner), as mainline cmd_db_read_aux_data.
++ * Sends nothing to the RSC.
++ */
++int
++sweet_rpmh_cmd_db_aux(const char *res, uint8_t *buf, uint32_t max, uint32_t *len)
++{
++	if (!res || !buf || !len) {
++		return EINVAL;
++	}
++	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
++		return EBUSY;
++	}
++	int error = rh_map();
++	uint32_t key[2] = {0, 0};
++	for (unsigned i = 0; i < 8 && res[i]; ++i) {
++		key[i / 4] |= (uint32_t)(uint8_t)res[i] << (8u * (i % 4));
++	}
++	unsigned matches = 0;
++	for (unsigned i = 0; !error && i < 8; ++i) {
++		uint32_t h = 8u + 16u * i;
++		unsigned slave = rh_db16(h);
++		if (!slave) {
++			break;
++		}
++		uint32_t entries = RH_DB_HEADER + rh_db16(h + 2);
++		uint32_t aux = RH_DB_HEADER + rh_db16(h + 4);
++		unsigned count = rh_db16(h + 6);
++		if ((entries & 3u) || !rh_range(entries, count * RH_DB_ENTRY) || !rh_range(aux, 0)) {
++			error = EINVAL;
++			break;
++		}
++		for (unsigned j = 0; j < count; ++j) {
++			uint32_t e = entries + RH_DB_ENTRY * j;
++			if (rh_read(rh_db, e) != key[0] || rh_read(rh_db, e + 4) != key[1]) {
++				continue;
++			}
++			uint32_t off = aux + rh_db16(e + 22), n = rh_db16(e + 20);
++			if (!rh_range(off, n) || n > max) {
++				error = EINVAL;
++				break;
++			}
++			for (uint32_t k = 0; k < n; ++k) {
++				uint32_t w = rh_read(rh_db, (off + k) & ~3u);
++				buf[k] = (uint8_t)(w >> (8u * ((off + k) & 3u)));
++			}
++			*len = n;
++			++matches;
++		}
++	}
++	if (!error && matches != 1) {
++		error = ENODEV;
++	}
++	printf("SWEET RPMH: cmd-db aux %s: %u bytes, errno %d\n", res, error ? 0 : *len, error);
++	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
++	return error;
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 6b926fe..64e3a45 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -52,6 +52,7 @@ static void sweet_log_start(void);
+ extern void sweet_sample_start(void);
+ extern void sweet_keys_init(void);
+ extern void sweet_touch_init(void);
++extern void sweet_gpu_init(void);
+ extern void sweet_usb_probe(void);
+ 
+ #define REG_CAP         0x00
+@@ -660,6 +661,7 @@ sweet_ufs_init(void)
+ 	sweet_keys_init();
+ 	sweet_touch_init();
+ 	sweet_usb_probe();
++	sweet_gpu_init();
+ 	return 0;
+ }
+ 
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 68612db..01e674f 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -445,6 +445,78 @@ exec_add_user_string(struct image_params *imgp, user_addr_t str, int seg, boolea
+ 	return error;
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/*
++ * Boot-arg sweetenv=NAME:VAR=VAL[,VAR=VAL...] appends VAR=VAL to the
++ * environment of every executable whose file name is NAME, e.g.
++ * sweetenv=backboardd:CA_DISABLE_BACKDROP_CACHE=1 (CoreAnimation knobs
++ * without editing launchd.plist on the phone). Several NAME:... entries
++ * are separated by ';'.
++ */
++static int
++sweet_exec_env(struct image_params *imgp, int ptr_size)
++{
++	static char spec[512];
++	static int state;       /* 0 not parsed, 1 none, 2 set */
++	if (state == 0) {
++		state = PE_parse_boot_argn("sweetenv", spec, sizeof(spec)) && spec[0] ? 2 : 1;
++	}
++	if (state != 2) {
++		return 0;
++	}
++	const char *path = imgp->ip_strings + strlen("executable_path="), *base = path;
++	for (const char *c = path; *c; c++) {
++		if (*c == '/') {
++			base = c + 1;
++		}
++	}
++	const char *entry = spec;
++	for (;;) {
++		size_t n = 0;
++		while (entry[n] && entry[n] != ':' && entry[n] != ';') {
++			n++;
++		}
++		if (entry[n] == ':' && strlen(base) == n && strncmp(base, entry, n) == 0) {
++			break;
++		}
++		while (*entry && *entry != ';') {
++			entry++;
++		}
++		if (*entry == '\0') {
++			return 0;
++		}
++		entry++;
++	}
++	const char *p = strchr(entry, ':') + 1;
++	while (*p && *p != ';') {
++		char var[128];
++		size_t len = 0;
++		while (p[len] && p[len] != ',' && p[len] != ';') {
++			len++;
++		}
++		if (len > 0 && len < sizeof(var)) {
++			memcpy(var, p, len);
++			var[len] = '\0';
++			int error = exec_add_user_string(imgp, CAST_USER_ADDR_T(var), UIO_SYSSPACE, TRUE);
++			if (error) {
++				return error;
++			}
++			if (imgp->ip_argspace < ptr_size) {
++				return E2BIG;
++			}
++			imgp->ip_argspace -= ptr_size;
++			imgp->ip_envc++;
++			printf("SWEET ENV: %s += %s\n", base, var);
++		}
++		p += len;
++		if (*p == ',') {
++			p++;
++		}
++	}
++	return 0;
++}
++#endif
++
+ /*
+  * dyld is now passed the executable path as a getenv-like variable
+  * in the same fashion as the stack_guard and malloc_entropy keys.
+@@ -5741,6 +5813,13 @@ exec_extract_strings(struct image_params *imgp)
+ 		imgp->ip_envc++;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	error = sweet_exec_env(imgp, new_ptr_size);
++	if (error) {
++		goto bad;
++	}
++#endif
++
+ 	/* Save space for envv[] NULL terminator */
+ 	if (imgp->ip_argspace < new_ptr_size) {
+ 		error = E2BIG;
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index cb67b4d..bd919bc 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -28,6 +28,7 @@
+ #include <libkern/amfi/amfi.h>
+ #include <mach/kern_return.h>
+ #include <sys/codesign.h>
++#include <sys/kauth.h>
+ #include <sys/mount.h>
+ #include <sys/priv.h>
+ #include <sys/proc.h>
+@@ -285,8 +286,50 @@ sweet_amfi_vnode_check_signature(struct vnode *vp, __unused struct label *label,
+  */
+ static uint64_t sweet_sandbox_seen;
+ 
++/*
++ * Op 4, container path of a pid: arg -> {int64 pid; 0; char *buf; u64 len; 0}.
++ * PlugInKit's checkEnvironment aborts every app extension ("plugin has
++ * invalid sandbox or container: error 2") without one (speech synthesizer
++ * AUs crash-looped, boot 0109b). App extensions (executable inside a
++ * .appex) running as mobile get the mobile home; everything else still gets
++ * ENOENT, like an uncontainerized process on iOS.
++ */
++static int
++sweet_sandbox_container_path(user_addr_t arg)
++{
++	uint64_t a[5];
++	char path[MAXPATHLEN];
++	int len = sizeof(path), err = ENOENT;
++	static const char home[] = "/private/var/mobile";
++	proc_t p;
++	kauth_cred_t cred;
++	uid_t uid;
++	vnode_t vp;
++
++	if (copyin(arg, a, sizeof(a)) != 0 || a[2] == 0 || a[3] < sizeof(home)) {
++		return ENOENT;
++	}
++	p = proc_find((int)a[0]);
++	if (p == NULL) {
++		return ESRCH;
++	}
++	cred = kauth_cred_proc_ref(p);
++	uid = kauth_cred_getuid(cred);
++	kauth_cred_unref(&cred);
++	vp = proc_getexecutablevnode(p);
++	proc_rele(p);
++	if (vp == NULLVP) {
++		return ENOENT;
++	}
++	if (uid == 501 && vn_getpath(vp, path, &len) == 0 && strnstr(path, ".appex/", sizeof(path)) != NULL) {
++		err = copyout(home, (user_addr_t)a[2], sizeof(home));
++	}
++	vnode_put(vp);
++	return err;
++}
++
+ static int
+-sweet_sandbox_syscall(struct proc *p, int call, __unused user_addr_t arg)
++sweet_sandbox_syscall(struct proc *p, int call, user_addr_t arg)
+ {
+ 	if (call >= 0 && call < 64 && !(sweet_sandbox_seen & (1ULL << call))) {
+ 		sweet_sandbox_seen |= 1ULL << call;
+@@ -295,7 +338,8 @@ sweet_sandbox_syscall(struct proc *p, int call, __unused user_addr_t arg)
+ 		printf("SWEET Sandbox: %s op %d\n", name, call);
+ 	}
+ 	switch (call) {
+-	case 4:         /* container path (audit token / pid) */
++	case 4:         /* container path (pid) */
++		return sweet_sandbox_container_path(arg);
+ 	case 5:         /* extension issue */
+ 	case 6:         /* extension consume */
+ 	case 0x43:      /* container expected */
+@@ -305,8 +349,33 @@ sweet_sandbox_syscall(struct proc *p, int call, __unused user_addr_t arg)
+ 	}
+ }
+ 
++/*
++ * Policy "AMFI" syscalls. dyld asks op 0x5a (amfi_check_dyld_policy_self,
++ * arg -> {u64 in_flags; u64 *out_flags}) which DYLD_* variables to honour;
++ * on failure it honours none, so DYLD_INSERT_LIBRARIES (sweetenv) was
++ * ignored. Allow @paths, path variables, fallback paths, print variables,
++ * failed insertions (a bad dylib must not kill backboardd) and interposing.
++ * Other ops fail as before (no policy).
++ */
++#define SWEET_AMFI_DYLD_FLAGS   0x7bull
++
++static int
++sweet_amfi_syscall(__unused struct proc *p, int call, user_addr_t arg)
++{
++	uint64_t a[2], flags = SWEET_AMFI_DYLD_FLAGS;
++
++	if (call != 0x5a) {
++		return ENOPOLICY;
++	}
++	if (copyin(arg, a, sizeof(a)) != 0 || a[1] == 0) {
++		return EFAULT;
++	}
++	return copyout(&flags, (user_addr_t)a[1], sizeof(flags));
++}
++
+ static const struct mac_policy_ops sweet_amfi_mac_ops = {
+ 	.mpo_vnode_check_signature = sweet_amfi_vnode_check_signature,
++	.mpo_policy_syscall = sweet_amfi_syscall,
+ };
+ 
+ /*
+@@ -360,7 +429,7 @@ static struct mac_policy_conf sweet_sandbox_mac_conf = {
+ static mac_policy_handle_t sweet_sandbox_mac_handle;
+ 
+ static struct mac_policy_conf sweet_amfi_mac_conf = {
+-	.mpc_name = "SWEET AMFI",
++	.mpc_name = "AMFI",             /* __mac_syscall("AMFI", ...) finds it by name */
+ 	.mpc_fullname = "SWEET built-in Mobile File Integrity",
+ 	.mpc_ops = &sweet_amfi_mac_ops,
+ };
+diff --git a/iokit/Kernel/IOService.cpp b/iokit/Kernel/IOService.cpp
+index 59c834e..e26ca5e 100644
+--- a/iokit/Kernel/IOService.cpp
++++ b/iokit/Kernel/IOService.cpp
+@@ -1200,7 +1200,9 @@ IOService::iokitDaemonLaunched(void)
+ 	}
+ 	IOServiceTrace(IOSERVICE_KEXTD_READY, 0, 0, 0, 0);
+ 	startDeferredMatches();
++#if !defined(ARM64_BOARD_CONFIG_SWEET)                  /* no hold taken (IOStartIOKit.cpp) */
+ 	getServiceRoot()->adjustBusy(-1);
++#endif
+ 	IOService::publishUserResource(gIOResourceIOKitKey);
+ #endif /* !NO_KEXTD */
+ }
+diff --git a/iokit/Kernel/IOStartIOKit.cpp b/iokit/Kernel/IOStartIOKit.cpp
+index d74c063..e843e5a 100644
+--- a/iokit/Kernel/IOStartIOKit.cpp
++++ b/iokit/Kernel/IOStartIOKit.cpp
+@@ -77,8 +77,9 @@ IOKitInitializeTime( void )
+ 	t.tv_sec = 30;
+ 	t.tv_nsec = 0;
+ 
+-// RTC is not present on this target
+-#ifndef BCM2837
++// RTC is not present on this target (SWEET/Pixel 1: no IORTC driver either,
++// waiting only cost 30 s of every boot)
++#if !defined(BCM2837) && !defined(ARM64_BOARD_CONFIG_SWEET)
+ 	IOService::waitForService(
+ 		IOService::resourceMatching("IORTC"), &t );
+ #endif
+@@ -188,7 +189,17 @@ StartIOKitMatching(void)
+ 	}
+ 
+ #if !NO_KEXTD
++	/*
++	 * SWEET: iOS has no IOKit daemon (kernelmanagerd) to report its launch, so
++	 * this hold kept the registry root busy for good: IOKit never quiesced
++	 * (IOKitWaitQuiet callers, configd's InterfaceNamer). Idea from the
++	 * ios-topaz fork (0128).
++	 */
++#if !defined(ARM64_BOARD_CONFIG_SWEET)
+ 	if (OSKext::iokitDaemonAvailable()) {
++#else
++	if (false) {
++#endif
+ 		/* Add a busy count to keep the registry busy until the IOKit daemon has
+ 		 * completely finished launching. This is decremented when the IOKit daemon
+ 		 * messages the kernel after the in-kernel linker has been
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+new file mode 100644
+index 0000000..93377c0
+--- /dev/null
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -0,0 +1,634 @@
++/*
++ * SweetGPU: user client for the Adreno 530 (bsd/dev/sweet_gpu.c, kernel API
++ * in bsd/dev/sweet_gpu.h; GPU up with boot-arg sweetgpu=8).
++ *
++ * Selectors:
++ *   0 map user memory   in: address, length[, flags: bit 0 read-only (quad
++ *                       source only)]   out: GPU VA of address
++ *   1 map IOSurface     in: surface id        out: GPU VA, allocation size
++ *   2 unmap             in: GPU VA returned by 0 or 1
++ *   3 quad              in: struct sweet_gpu_quad (both images inside this
++ *                       client's mappings), runs synchronously
++ * Mappings wire the memory (user pages / surface) until unmapped or the
++ * client closes. For selectors 0-3 user space never supplies GPU commands
++ * or physical addresses: the kernel builds the command stream and checks
++ * every range.
++ *
++ * Buffer objects and command streams, for a user-space driver (Mesa
++ * freedreno through tools/sweetgl's msm emulation):
++ *   10 bo new           in: size              out: handle, GPU VA, address
++ *                       (zeroed wired memory, cached in the caller,
++ *                       uncached for the GPU)
++ *   11 bo free          in: handle (waits for the last submit using it)
++ *   12 bo import        in: IOSurface id      out: handle, GPU VA, size
++ *                       (the surface's pages)
++ *   13 submit           struct in: struct sweet_gpu_submit + ibs[nr_ibs] +
++ *                       u32 handles[nr_bos] (every bo the IBs touch)
++ *                       out: sequence number
++ *   14 wait             in: sequence number, timeout ms (0: poll)
++ *   15 info             out: chip id, GMEM size, GMEM base, max Hz, 0
++ *   16 bo cpu prep      in: handle (after its last submit completed: drops
++ *                       the CPU's cached lines, so the CPU sees GPU writes)
++ * The CPU cache is cleaned and invalidated over every bo a submit lists.
++ * The GPU executes these streams as they are, with access to every GPU VA
++ * mapping (one address space): a client can read and write other clients'
++ * GPU memory. Acceptable on this single-user bring-up device only.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <IOKit/IOService.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOKitKeys.h>
++#include <IOKit/IOLib.h>
++#include <IOKit/IOLocks.h>
++#include <IOKit/IOMemoryDescriptor.h>
++#include "SweetSurface.h"
++#include <sys/errno.h>
++#include "../../../bsd/dev/sweet_gpu.h"
++
++extern "C" void proc_selfname(char *buf, int size);
++
++#define SWEET_GPU_MAX_MAPS      128
++#define SWEET_GPU_MAX_MAP_BYTES (64ull << 20)
++#define SWEET_GPU_MAX_BOS       16384u
++#define SWEET_GPU_MAX_BO_BYTES  (256ull << 20)
++#define SWEET_GPU_CLIENT_BYTES  (768ull << 20)     /* own buffers per client */
++
++extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
++
++struct sweet_gpu_submit {
++	uint32_t nr_ibs, nr_bos;
++};
++
++static IOBufferMemoryDescriptor *gFencePage;
++
++class SweetGPU : public IOService {
++	OSDeclareDefaultStructors(SweetGPU);
++
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(SweetGPU, IOService);
++
++bool
++SweetGPU::start(IOService *provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	gFencePage = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++	    kIODirectionInOut | kIOMemoryKernelUserShared, page_size, page_size);
++	if (gFencePage != NULL) {
++		IOByteCount seg = 0;
++		uint64_t pa = gFencePage->getPhysicalSegment(0, &seg, kIOMemoryMapperNone);
++		bzero(gFencePage->getBytesNoCopy(), page_size);
++		flush_dcache64((addr64_t)pa, (unsigned)page_size, TRUE);
++		sweet_gpu_set_fence_page((uintptr_t)gFencePage->getBytesNoCopy(), pa);
++	}
++	setProperty(kIOUserClientClassKey, "SweetGPUUserClient");
++	registerService();
++	IOLog("SWEET GPU: SweetGPU registered\n");
++	return true;
++}
++
++struct sweet_gpu_map {
++	uint64_t gva;                   /* GPU VA of the first page */
++	uint64_t start, len;            /* GPU VA range the client may use */
++	IOMemoryDescriptor *md;         /* prepared (wired) */
++	SweetSurface *surface;          /* retained, for surface mappings */
++};
++
++struct sweet_gpu_bo {
++	uint64_t iova, size;
++	IOMemoryDescriptor *md;         /* own buffer or a surface's memory; wired */
++	IOMemoryMap *umap;              /* own buffers: the client's mapping */
++	SweetSurface *surface;          /* imports */
++	uint64_t *pa;                   /* pages, for cache maintenance */
++	uint32_t npages;
++	uint32_t last_seq;              /* last submit listing it */
++	bool used;                      /* listed in a submit at least once */
++};
++
++class SweetGPUUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(SweetGPUUserClient);
++
++	task_t fTask;
++	IOLock *fLock;
++	struct sweet_gpu_map fMaps[SWEET_GPU_MAX_MAPS];
++	struct sweet_gpu_bo *fBos;
++	uint32_t fBoCap;
++	uint64_t fBoBytes;
++
++	IOReturn mapDescriptor(IOMemoryDescriptor *md, uint64_t offset, uint64_t len,
++	    SweetSurface *surface, bool readonly, uint64_t *gvaOut);
++	void unmapSlot(unsigned i);
++	bool owns(uint64_t va, uint64_t len);
++	struct sweet_gpu_bo *newBo(uint32_t *handle);
++	struct sweet_gpu_bo *bo(uint64_t handle);
++	void freeBo(struct sweet_gpu_bo *b);
++	IOReturn boNew(uint64_t size, uint64_t *out);
++	IOReturn boImport(uint32_t id, uint64_t *out);
++	IOReturn submit(const void *in, size_t len, uint64_t *seq);
++
++public:
++	bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
++	void free() APPLE_KEXT_OVERRIDE;
++	IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	    IOExternalMethodDispatch *dispatch, OSObject *target, void *reference) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(SweetGPUUserClient, IOUserClient);
++
++bool
++SweetGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
++{
++	if (!IOUserClient::initWithTask(owningTask, securityID, type)) {
++		return false;
++	}
++	fTask = owningTask;
++	bzero(fMaps, sizeof(fMaps));
++	fLock = IOLockAlloc();
++	char name[32];
++	proc_selfname(name, sizeof(name));
++	IOLog("SWEET GPU: user client opened by %s\n", name);
++	return fLock != NULL;
++}
++
++void
++SweetGPUUserClient::free()
++{
++	if (fLock != NULL) {
++		for (unsigned i = 0; i < SWEET_GPU_MAX_MAPS; i++) {
++			unmapSlot(i);
++		}
++		for (uint32_t i = 0; i < fBoCap; i++) {
++			freeBo(&fBos[i]);
++		}
++		IOLockFree(fLock);
++		fLock = NULL;
++	}
++	if (fBos != NULL) {
++		IOFreeData(fBos, fBoCap * sizeof(fBos[0]));
++		fBos = NULL;
++	}
++	IOUserClient::free();
++}
++
++IOReturn
++SweetGPUUserClient::clientClose(void)
++{
++	IOLockLock(fLock);
++	for (unsigned i = 0; i < SWEET_GPU_MAX_MAPS; i++) {
++		unmapSlot(i);
++	}
++	for (uint32_t i = 0; i < fBoCap; i++) {
++		freeBo(&fBos[i]);
++	}
++	IOLockUnlock(fLock);
++	terminate();
++	return kIOReturnSuccess;
++}
++
++/* Lock held (or the client is being freed). */
++void
++SweetGPUUserClient::unmapSlot(unsigned i)
++{
++	struct sweet_gpu_map *m = &fMaps[i];
++	if (m->md == NULL) {
++		return;
++	}
++	sweet_gpu_vm_unmap(m->gva);
++	m->md->complete();
++	m->md->release();
++	OSSafeReleaseNULL(m->surface);
++	bzero(m, sizeof(*m));
++}
++
++/* Lock held. */
++bool
++SweetGPUUserClient::owns(uint64_t va, uint64_t len)
++{
++	for (unsigned i = 0; i < SWEET_GPU_MAX_MAPS; i++) {
++		const struct sweet_gpu_map *m = &fMaps[i];
++		if (m->md != NULL && va >= m->start && len <= m->len && va - m->start <= m->len - len) {
++			return true;
++		}
++	}
++	return false;
++}
++
++/*
++ * Lock held. Wire md (takes over the caller's reference on success), map
++ * its pages, record [gva + offset, + len) as usable.
++ */
++IOReturn
++SweetGPUUserClient::mapDescriptor(IOMemoryDescriptor *md, uint64_t offset, uint64_t len,
++    SweetSurface *surface, bool readonly, uint64_t *gvaOut)
++{
++	unsigned slot = SWEET_GPU_MAX_MAPS;
++	for (unsigned i = 0; i < SWEET_GPU_MAX_MAPS && slot == SWEET_GPU_MAX_MAPS; i++) {
++		if (fMaps[i].md == NULL) {
++			slot = i;
++		}
++	}
++	uint64_t size = md->getLength();
++	if (slot == SWEET_GPU_MAX_MAPS || size == 0 || size > SWEET_GPU_MAX_MAP_BYTES || (size & PAGE_MASK)) {
++		return kIOReturnNoResources;
++	}
++	if (md->prepare(readonly ? kIODirectionOut : kIODirectionInOut) != kIOReturnSuccess) {
++		return kIOReturnVMError;
++	}
++	uint32_t npages = (uint32_t)(size / PAGE_SIZE);
++	uint64_t *pa = (uint64_t *)IOMallocData(npages * sizeof(uint64_t));
++	bool ok = pa != NULL;
++	for (uint32_t p = 0; ok && p < npages; p++) {
++		IOByteCount seg = 0;
++		pa[p] = md->getPhysicalSegment((IOByteCount)p * PAGE_SIZE, &seg, kIOMemoryMapperNone);
++		ok = pa[p] != 0 && (pa[p] & PAGE_MASK) == 0 && seg >= PAGE_SIZE;
++	}
++	uint64_t gva = ok ? sweet_gpu_vm_map(pa, npages, readonly) : 0;
++	if (pa != NULL) {
++		IOFreeData(pa, npages * sizeof(uint64_t));
++	}
++	if (gva == 0) {
++		md->complete();
++		return kIOReturnNoMemory;
++	}
++	fMaps[slot].gva = gva;
++	fMaps[slot].start = gva + offset;
++	fMaps[slot].len = len;
++	fMaps[slot].md = md;
++	fMaps[slot].surface = surface;
++	*gvaOut = gva + offset;
++	return kIOReturnSuccess;
++}
++
++/* Lock held: a free slot (the table grows by doubling), or NULL. */
++struct sweet_gpu_bo *
++SweetGPUUserClient::newBo(uint32_t *handle)
++{
++	for (uint32_t i = 0; i < fBoCap; i++) {
++		if (fBos[i].md == NULL) {
++			*handle = i + 1;
++			return &fBos[i];
++		}
++	}
++	uint32_t cap = fBoCap ? fBoCap * 2 : 256;
++	if (cap > SWEET_GPU_MAX_BOS) {
++		return NULL;
++	}
++	struct sweet_gpu_bo *n = (struct sweet_gpu_bo *)IOMallocZeroData(cap * sizeof(n[0]));
++	if (n == NULL) {
++		return NULL;
++	}
++	if (fBos != NULL) {
++		memcpy(n, fBos, fBoCap * sizeof(n[0]));
++		IOFreeData(fBos, fBoCap * sizeof(fBos[0]));
++	}
++	fBos = n;
++	*handle = fBoCap + 1;
++	fBoCap = cap;
++	return &fBos[*handle - 1];
++}
++
++/* Lock held: the bo for a handle, or NULL. */
++struct sweet_gpu_bo *
++SweetGPUUserClient::bo(uint64_t handle)
++{
++	return handle >= 1 && handle <= fBoCap && fBos[handle - 1].md != NULL ? &fBos[handle - 1] : NULL;
++}
++
++/*
++ * Lock held (or the client is being freed). The GPU may still use the
++ * memory: wait for the last submit that listed the bo first (a hung GPU
++ * fails the wait at once; its memory is then left mapped and wired rather
++ * than freed under a GPU that might wake up).
++ */
++void
++SweetGPUUserClient::freeBo(struct sweet_gpu_bo *b)
++{
++	if (b->md == NULL) {
++		return;
++	}
++	if (b->used && sweet_gpu_wait(b->last_seq, 2000) != 0) {
++		printf("SWEET GPU: bo %llx busy at free, leaked\n", b->iova);
++		bzero(b, sizeof(*b));
++		return;
++	}
++	sweet_gpu_vm_unmap(b->iova);
++	OSSafeReleaseNULL(b->umap);
++	IOFreeData(b->pa, b->npages * sizeof(uint64_t));
++	if (b->surface != NULL) {
++		b->md->complete();
++		b->surface->release();
++	} else {
++		fBoBytes -= b->size;
++	}
++	b->md->release();
++	bzero(b, sizeof(*b));
++}
++
++/* out: handle, GPU VA, user address. */
++IOReturn
++SweetGPUUserClient::boNew(uint64_t size, uint64_t *out)
++{
++	size = round_page_64(size);
++	if (size == 0 || size > SWEET_GPU_MAX_BO_BYTES || fBoBytes + size > SWEET_GPU_CLIENT_BYTES) {
++		return kIOReturnNoMemory;
++	}
++	uint32_t handle;
++	struct sweet_gpu_bo *b = newBo(&handle);
++	if (b == NULL) {
++		return kIOReturnNoResources;
++	}
++	IOBufferMemoryDescriptor *md = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++	    kIODirectionInOut | kIOMemoryKernelUserShared, size, page_size);
++	if (md == NULL) {
++		return kIOReturnNoMemory;
++	}
++	uint32_t npages = (uint32_t)(size / PAGE_SIZE);
++	uint64_t *pa = (uint64_t *)IOMallocData(npages * sizeof(uint64_t));
++	bool ok = pa != NULL;
++	for (uint32_t p = 0; ok && p < npages; p++) {
++		IOByteCount seg = 0;
++		pa[p] = md->getPhysicalSegment((IOByteCount)p * PAGE_SIZE, &seg, kIOMemoryMapperNone);
++		ok = pa[p] != 0 && (pa[p] & PAGE_MASK) == 0 && seg >= PAGE_SIZE;
++		if (ok) {
++			/* zeroed through the cached kernel alias: push it out, drop the lines */
++			flush_dcache64((addr64_t)pa[p], PAGE_SIZE, TRUE);
++		}
++	}
++	uint64_t gva = ok ? sweet_gpu_vm_map(pa, npages, false) : 0;
++	/*
++	 * Cached in the caller like everywhere else: a write-combined user
++	 * mapping of managed pages makes the pmap rewrite their physmap PTEs
++	 * (froze boot 0150a). Cache maintenance at submit and cpu prep instead.
++	 */
++	IOMemoryMap *umap = gva ? md->createMappingInTask(fTask, 0, kIOMapAnywhere) : NULL;
++	if (umap == NULL) {
++		if (gva) {
++			sweet_gpu_vm_unmap(gva);
++		}
++		if (pa != NULL) {
++			IOFreeData(pa, npages * sizeof(uint64_t));
++		}
++		md->release();
++		return kIOReturnNoMemory;
++	}
++	*b = (struct sweet_gpu_bo){ .iova = gva, .size = size, .md = md, .umap = umap, .pa = pa, .npages = npages };
++	fBoBytes += size;
++	out[0] = handle;
++	out[1] = gva;
++	out[2] = umap->getAddress();
++	return kIOReturnSuccess;
++}
++
++/* out: handle, GPU VA, size. */
++IOReturn
++SweetGPUUserClient::boImport(uint32_t id, uint64_t *out)
++{
++	SweetSurface *s = sweet_surface_copy(id);
++	if (s == NULL || s->memory == NULL) {
++		OSSafeReleaseNULL(s);
++		return kIOReturnNotFound;
++	}
++	IOMemoryDescriptor *md = s->memory;
++	uint64_t size = md->getLength();
++	uint32_t handle;
++	struct sweet_gpu_bo *b = (size && !(size & PAGE_MASK) && size <= SWEET_GPU_MAX_BO_BYTES) ? newBo(&handle) : NULL;
++	if (b == NULL || md->prepare() != kIOReturnSuccess) {
++		s->release();
++		return b == NULL ? kIOReturnNoResources : kIOReturnVMError;
++	}
++	uint32_t npages = (uint32_t)(size / PAGE_SIZE);
++	uint64_t *pa = (uint64_t *)IOMallocData(npages * sizeof(uint64_t));
++	bool ok = pa != NULL;
++	for (uint32_t p = 0; ok && p < npages; p++) {
++		IOByteCount seg = 0;
++		pa[p] = md->getPhysicalSegment((IOByteCount)p * PAGE_SIZE, &seg, kIOMemoryMapperNone);
++		ok = pa[p] != 0 && (pa[p] & PAGE_MASK) == 0 && seg >= PAGE_SIZE;
++	}
++	uint64_t gva = ok ? sweet_gpu_vm_map(pa, npages, false) : 0;
++	if (gva == 0) {
++		if (pa != NULL) {
++			IOFreeData(pa, npages * sizeof(uint64_t));
++		}
++		md->complete();
++		s->release();
++		return kIOReturnNoMemory;
++	}
++	md->retain();
++	*b = (struct sweet_gpu_bo){ .iova = gva, .size = size, .md = md, .surface = s, .pa = pa, .npages = npages };
++	out[0] = handle;
++	out[1] = gva;
++	out[2] = size;
++	return kIOReturnSuccess;
++}
++
++/* Lock held. in: struct sweet_gpu_submit, ibs, handles. */
++IOReturn
++SweetGPUUserClient::submit(const void *in, size_t len, uint64_t *seqOut)
++{
++	struct sweet_gpu_submit h;
++	if (len < sizeof(h)) {
++		return kIOReturnBadArgument;
++	}
++	memcpy(&h, in, sizeof(h));
++	if (h.nr_ibs == 0 || h.nr_ibs > SWEET_GPU_MAX_IBS || h.nr_bos > SWEET_GPU_MAX_BOS ||
++	    len != sizeof(h) + h.nr_ibs * sizeof(struct sweet_gpu_ib) + h.nr_bos * sizeof(uint32_t)) {
++		return kIOReturnBadArgument;
++	}
++	const struct sweet_gpu_ib *ib = (const struct sweet_gpu_ib *)((const char *)in + sizeof(h));
++	const uint32_t *handles = (const uint32_t *)(ib + h.nr_ibs);
++	for (uint32_t i = 0; i < h.nr_bos; i++) {
++		struct sweet_gpu_bo *b = bo(handles[i]);
++		if (b == NULL) {
++			return kIOReturnBadArgument;
++		}
++		/* CPU-cached: its CPU writes to memory, no stale lines over GPU writes */
++		/* ponytail: whole bo every submit; track CPU-dirty bos if this shows in profiles */
++		for (uint32_t p = 0; p < b->npages; p++) {
++			flush_dcache64((addr64_t)b->pa[p], PAGE_SIZE, TRUE);
++		}
++	}
++	uint32_t seq = 0;
++	int e = sweet_gpu_submit(ib, h.nr_ibs, &seq);
++	if (e != 0) {
++		return e == EFAULT ? kIOReturnNotPermitted : e == EINVAL ? kIOReturnBadArgument :
++		       e == ETIMEDOUT ? kIOReturnTimeout : kIOReturnNotReady;
++	}
++	for (uint32_t i = 0; i < h.nr_bos; i++) {
++		struct sweet_gpu_bo *b = bo(handles[i]);
++		b->last_seq = seq;
++		b->used = true;
++	}
++	*seqOut = seq;
++	return kIOReturnSuccess;
++}
++
++IOReturn
++SweetGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++    __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target, __unused void *reference)
++{
++	if (selector == 14) {           /* wait: without the client lock (other threads submit) */
++		if (args->scalarInputCount != 2) {
++			return kIOReturnBadArgument;
++		}
++		int e = sweet_gpu_wait((uint32_t)args->scalarInput[0], (uint32_t)(args->scalarInput[1] < 60000 ? args->scalarInput[1] : 60000));
++		return e == 0 ? kIOReturnSuccess : e == ETIMEDOUT ? kIOReturnTimeout : kIOReturnNotReady;
++	}
++	if (!sweet_gpu_ready()) {
++		return kIOReturnNotReady;
++	}
++	IOReturn ret = kIOReturnBadArgument;
++	IOLockLock(fLock);
++	switch (selector) {
++	case 10:                /* bo new */
++		if (args->scalarInputCount >= 1 && args->scalarOutputCount >= 3) {
++			ret = boNew(args->scalarInput[0], args->scalarOutput);
++			args->scalarOutputCount = ret == kIOReturnSuccess ? 3 : 0;
++		}
++		break;
++	case 11:                /* bo free */
++		if (args->scalarInputCount == 1) {
++			struct sweet_gpu_bo *b = bo(args->scalarInput[0]);
++			ret = b != NULL ? kIOReturnSuccess : kIOReturnNotFound;
++			if (b != NULL) {
++				freeBo(b);
++			}
++		}
++		break;
++	case 12:                /* bo import */
++		if (args->scalarInputCount == 1 && args->scalarOutputCount >= 3) {
++			ret = boImport((uint32_t)args->scalarInput[0], args->scalarOutput);
++			args->scalarOutputCount = ret == kIOReturnSuccess ? 3 : 0;
++		}
++		break;
++	case 13:                /* submit */
++		if (args->scalarOutputCount >= 1) {
++			uint64_t seq = 0;
++			if (args->structureInputDescriptor != NULL) {
++				IOMemoryDescriptor *d = args->structureInputDescriptor;
++				size_t len = d->getLength();
++				void *buf = len <= (1u << 20) ? IOMallocData(len) : NULL;
++				if (buf == NULL) {
++					ret = kIOReturnNoMemory;
++					break;
++				}
++				ret = d->prepare() == kIOReturnSuccess ? kIOReturnSuccess : kIOReturnVMError;
++				if (ret == kIOReturnSuccess) {
++					ret = d->readBytes(0, buf, len) == len ? submit(buf, len, &seq) : kIOReturnVMError;
++					d->complete();
++				}
++				IOFreeData(buf, len);
++			} else if (args->structureInput != NULL) {
++				ret = submit(args->structureInput, args->structureInputSize, &seq);
++			}
++			args->scalarOutput[0] = seq;
++			args->scalarOutputCount = 1;
++		}
++		break;
++	case 15:                /* info */
++		if (args->scalarOutputCount >= 5) {
++			struct sweet_gpu_info info;
++			sweet_gpu_get_info(&info);
++			args->scalarOutput[0] = info.chip_id;
++			args->scalarOutput[1] = info.gmem_size;
++			args->scalarOutput[2] = info.gmem_base;
++			args->scalarOutput[3] = info.max_freq;
++			args->scalarOutput[4] = 0;      /* fence page no longer mapped: poll with 14 */
++			args->scalarOutputCount = 5;
++			ret = kIOReturnSuccess;
++		}
++		break;
++	case 16:                /* bo cpu prep */
++		if (args->scalarInputCount == 1) {
++			struct sweet_gpu_bo *b = bo(args->scalarInput[0]);
++			ret = b == NULL ? kIOReturnNotFound :
++			    b->used && sweet_gpu_wait(b->last_seq, 0) != 0 ? kIOReturnBusy : kIOReturnSuccess;
++			for (uint32_t p = 0; ret == kIOReturnSuccess && p < b->npages; p++) {
++				flush_dcache64((addr64_t)b->pa[p], PAGE_SIZE, TRUE);
++			}
++		}
++		break;
++
++	case 0:                 /* map user memory */
++		if ((args->scalarInputCount == 2 || args->scalarInputCount == 3) && args->scalarOutputCount >= 1) {
++			uint64_t addr = args->scalarInput[0], len = args->scalarInput[1];
++			bool ro = args->scalarInputCount == 3 && (args->scalarInput[2] & 1);
++			uint64_t base = trunc_page_64(addr), end = round_page_64(addr + len);
++			if (len == 0 || end <= base || end - base > SWEET_GPU_MAX_MAP_BYTES) {
++				break;
++			}
++			IOMemoryDescriptor *md = IOMemoryDescriptor::withAddressRange(base, end - base,
++			    ro ? kIODirectionOut : kIODirectionInOut, fTask);
++			if (md == NULL) {
++				ret = kIOReturnNoMemory;
++				break;
++			}
++			uint64_t gva = 0;
++			ret = mapDescriptor(md, addr - base, len, NULL, ro, &gva);
++			if (ret != kIOReturnSuccess) {
++				md->release();
++				break;
++			}
++			args->scalarOutput[0] = gva;
++			args->scalarOutputCount = 1;
++		}
++		break;
++	case 1:                 /* map IOSurface */
++		if (args->scalarInputCount == 1 && args->scalarOutputCount >= 2) {
++			SweetSurface *s = sweet_surface_copy((uint32_t)args->scalarInput[0]);
++			if (s == NULL || s->memory == NULL) {
++				OSSafeReleaseNULL(s);
++				ret = kIOReturnNotFound;
++				break;
++			}
++			s->memory->retain();
++			uint64_t gva = 0;
++			ret = mapDescriptor(s->memory, 0, s->memory->getLength(), s, false, &gva);
++			if (ret != kIOReturnSuccess) {
++				s->memory->release();
++				s->release();
++				break;
++			}
++			args->scalarOutput[0] = gva;
++			args->scalarOutput[1] = s->allocSize;
++			args->scalarOutputCount = 2;
++		}
++		break;
++	case 2:                 /* unmap */
++		if (args->scalarInputCount == 1) {
++			ret = kIOReturnNotFound;
++			for (unsigned i = 0; i < SWEET_GPU_MAX_MAPS; i++) {
++				if (fMaps[i].md != NULL && fMaps[i].start == args->scalarInput[0]) {
++					unmapSlot(i);
++					ret = kIOReturnSuccess;
++					break;
++				}
++			}
++		}
++		break;
++	case 3:                 /* quad */
++		if (args->structureInputSize == sizeof(struct sweet_gpu_quad) && args->structureInput != NULL) {
++			struct sweet_gpu_quad q;
++			memcpy(&q, args->structureInput, sizeof(q));
++			if (!owns(q.src_va, (uint64_t)q.src_pitch * q.src_h) ||
++			    !owns(q.dst_va, (uint64_t)q.dst_pitch * q.dst_h)) {
++				ret = kIOReturnNotPermitted;
++				break;
++			}
++			int e = sweet_gpu_quad(&q);
++			ret = e == 0 ? kIOReturnSuccess : e == ETIMEDOUT ? kIOReturnTimeout :
++			    e == EFAULT ? kIOReturnNotPermitted : e == ENXIO ? kIOReturnNotReady : kIOReturnBadArgument;
++		}
++		break;
++	default:
++		ret = kIOReturnUnsupported;
++		break;
++	}
++	IOLockUnlock(fLock);
++	return ret;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 7f90c56..0715ee4 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -12,6 +12,10 @@
+  *   sel 4   lookup by id: scalar [id], struct out = lock result
+  *   sel 34  lookup by mach port: scalar [port name], struct out = lock result
+  *   sel 35  create mach port: scalars [id, options], scalar out [port name]
++ *   sel 6/7 wrap client image/memory: refused (kIOReturnUnsupported)
++ *   IOSurfaceAddress in the create properties: the surface is the
++ *           creator's own memory (CA wraps image bitmaps this way), wired
++ *           while the surface lives; base = page-aligned mapping + offset
+  *   traps   0/1 use count +/- (id, category), 2 lock / 3 unlock
+  *           (id, options, &seed), 4/5 release (id)
+  *
+@@ -27,6 +31,9 @@
+  */
+ #include "SweetSurface.h"
+ 
++extern "C" void sweet_user_backtrace(const char *tag);   /* osfmk/kern/exception.c */
++#define SWEET_FMT(a, b, c, d) ((uint32_t)(a) << 24 | (uint32_t)(b) << 16 | (uint32_t)(c) << 8 | (uint32_t)(d))
++
+ #if defined(SWEET)
+ #include <IOKit/IOService.h>
+ #include <IOKit/IOUserClient.h>
+@@ -84,6 +91,9 @@ SweetSurface::free()
+ 		OSAddAtomic64(-(SInt64)allocSize, (volatile SInt64 *)&sweet_surface_wired);
+ 	}
+ 	OSSafeReleaseNULL(kernelMap);
++	if (clientMemory && memory != NULL) {
++		memory->complete();
++	}
+ 	OSSafeReleaseNULL(memory);
+ 	OSSafeReleaseNULL(state);
+ 	OSObject::free();
+@@ -98,7 +108,8 @@ SweetSurface::kernelAddress()
+ 	}
+ 	IOLockLock(sweet_surface_lock);
+ 	if (kernelMap == NULL && memory != NULL) {
+-		kernelMap = memory->map(kIOMapWriteCombineCache);
++		/* the surface's own mode: write-combining managed (client) pages froze 0150a */
++		kernelMap = memory->map(mapCache | (readOnly ? kIOMapReadOnly : 0));
+ 	}
+ 	IOLockUnlock(sweet_surface_lock);
+ 	return kernelMap != NULL ? (uintptr_t)kernelMap->getVirtualAddress() : 0;
+@@ -270,12 +281,27 @@ sweet_div_up(uint32_t a, uint32_t b)
+ }
+ 
+ static uint32_t
+-sweet_row_bytes(uint32_t width, uint32_t ew, uint32_t bpe)
++sweet_row_align(uint64_t row)
+ {
+-	uint64_t row = (uint64_t)sweet_div_up(width, ew) * bpe;
+ 	return (uint32_t)((row + SWEET_SURFACE_ROW_ALIGN - 1) & ~(uint64_t)(SWEET_SURFACE_ROW_ALIGN - 1));
+ }
+ 
++static uint32_t
++sweet_row_bytes(uint32_t width, uint32_t ew, uint32_t bpe)
++{
++	return sweet_row_align((uint64_t)sweet_div_up(width, ew) * bpe);
++}
++
++/* Row bytes for an explicit value (0: none) as above. */
++static uint32_t
++sweet_rows(uint32_t asked, uint32_t width, uint32_t ew, uint32_t bpe, unsigned int keys)
++{
++	if (asked == 0) {
++		return sweet_row_bytes(width, ew, bpe);
++	}
++	return keys <= 6 ? asked : sweet_row_align(asked);
++}
++
+ /* Geometry from the creation properties (IOSurface.h keys). */
+ static IOReturn
+ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+@@ -294,8 +320,17 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+ 	    s->bytesPerElement > 64 || s->elementWidth == 0 || s->elementHeight == 0) {
+ 		return kIOReturnBadArgument;
+ 	}
+-	s->bytesPerRow = sweet_dict_u32(props, "IOSurfaceBytesPerRow",
+-	    sweet_row_bytes(s->width, s->elementWidth, s->bytesPerElement));
++	/*
++	 * Explicit rows are rounded up to the alignment too: the Adreno 5xx
++	 * texture and render target pitch needs 64-byte rows, and CA takes the
++	 * real value from the lock result (SpringBoard asks for 833 px in 3360
++	 * bytes, renders into it on the GPU). Bare geometry requests (6 keys or
++	 * fewer) get them as asked: CoreUI fills its glyph surfaces with the row
++	 * bytes it asked for (sweetgl copies those).
++	 * ponytail: key count tells CoreUI from CA; a creator's backtrace if it stops.
++	 */
++	s->bytesPerRow = sweet_rows(sweet_dict_u32(props, "IOSurfaceBytesPerRow", 0),
++	    s->width, s->elementWidth, s->bytesPerElement, props->getCount());
+ 	if (s->bytesPerRow < (uint64_t)sweet_div_up(s->width, s->elementWidth) * s->bytesPerElement) {
+ 		return kIOReturnBadArgument;
+ 	}
+@@ -323,8 +358,8 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+ 			    p->bytesPerElement > 64 || p->elementWidth == 0 || p->elementHeight == 0) {
+ 				return kIOReturnBadArgument;
+ 			}
+-			p->bytesPerRow = sweet_dict_u32(pd, "IOSurfacePlaneBytesPerRow",
+-			    sweet_row_bytes(p->width, p->elementWidth, p->bytesPerElement));
++			p->bytesPerRow = sweet_rows(sweet_dict_u32(pd, "IOSurfacePlaneBytesPerRow", 0),
++			    p->width, p->elementWidth, p->bytesPerElement, props->getCount());
+ 			p->offset = sweet_dict_u32(pd, "IOSurfacePlaneOffset", (uint32_t)next);
+ 			p->size = sweet_dict_u32(pd, "IOSurfacePlaneSize",
+ 			    p->bytesPerRow * sweet_div_up(p->height, p->elementHeight));
+@@ -527,7 +562,8 @@ IOSurfaceRootUserClient::addRef(SweetSurface *s, SweetSurfaceRef **refOut, bool
+ 	s->retain();
+ 	ref->surface = s;
+ 	ref->count = 1;
+-	ref->data = s->memory->createMappingInTask(fTask, 0, kIOMapAnywhere | s->mapCache);
++	ref->data = s->memory->createMappingInTask(fTask, 0, kIOMapAnywhere | s->mapCache |
++	    (s->readOnly ? kIOMapReadOnly : 0));
+ 	ref->state = s->state->createMappingInTask(fTask, 0, kIOMapAnywhere | kIOMapReadOnly);
+ 	if (ref->data == NULL || ref->state == NULL) {
+ 		ref->release();
+@@ -684,7 +720,43 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 	}
+ 	s->parentID = args->scalarInputCount > 0 ? (uint32_t)args->scalarInput[0] : 0;
+ 	ret = sweet_surface_layout(s, props);
+-	if (ret == kIOReturnSuccess) {
++	OSNumber *address = OSDynamicCast(OSNumber, props->getObject("IOSurfaceAddress"));
++	if (ret == kIOReturnSuccess && address != NULL) {
++		/* the creator's memory: whole pages from the one holding the address */
++		uint64_t addr = address->unsigned64BitValue(), start = trunc_page_64(addr);
++		/* its rows as they are: no GPU alignment (sweetgl copies unaligned ones) */
++		uint32_t bpr = sweet_dict_u32(props, "IOSurfaceBytesPerRow", 0);
++		if (bpr >= (uint64_t)sweet_div_up(s->width, s->elementWidth) * s->bytesPerElement) {
++			s->bytesPerRow = bpr;
++		}
++		uint64_t len = round_page_64((addr - start) + (uint64_t)s->bytesPerRow *
++		    sweet_div_up(s->height, s->elementHeight));
++		bool ok = s->planeCount == 0 && addr != 0 && len <= SWEET_SURFACE_MAX_ALLOC;
++		IOReturn prc = kIOReturnBadArgument, rorc = kIOReturnBadArgument;
++		IOMemoryDescriptor *md = ok ? IOMemoryDescriptor::withAddressRange(start, len, kIODirectionInOut, fTask) : NULL;
++		if (md != NULL && (prc = md->prepare()) != kIOReturnSuccess) {
++			/* CA's image bitmaps are often read-only (decoded/file-backed): wire them for reading */
++			OSSafeReleaseNULL(md);
++			md = IOMemoryDescriptor::withAddressRange(start, len, kIODirectionOut, fTask);
++			if (md != NULL && (rorc = md->prepare()) != kIOReturnSuccess) {
++				OSSafeReleaseNULL(md);
++			}
++			s->readOnly = md != NULL;
++		}
++		if (md == NULL) {
++			IOLog("SWEET SURF: client memory 0x%llx+0x%llx: prepare %#x, read-only %#x\n", addr, len, prc, rorc);
++			ret = kIOReturnVMError;
++		} else {
++			s->memory = md;
++			s->clientMemory = true;
++			s->mapCache = kIOMapDefaultCache;
++			s->offset = (uint32_t)(addr - start);
++			s->allocSize = (uint32_t)len;
++			if (!sweet_surface_publish(s)) {
++				ret = kIOReturnNoResources;
++			}
++		}
++	} else if (ret == kIOReturnSuccess) {
+ 		IOBufferMemoryDescriptor *mem = NULL;
+ 		if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired) +
+ 		    s->allocSize <= SWEET_SURFACE_WIRED_MAX) {
+@@ -711,6 +783,16 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 		    name, s->id, s->width, s->height, s->pixelFormat, s->bytesPerElement,
+ 		    s->bytesPerRow, s->planeCount, s->allocSize, props->getCount(), ret);
+ 	}
++	/* Who asks for formats CoreAnimation's CPU renderer cannot draw into? */
++	static uint32_t odd_logged;
++	if (s->pixelFormat != SWEET_FMT('B', 'G', 'R', 'A') && s->pixelFormat != SWEET_FMT('L', '0', '0', '8') &&
++	    s->pixelFormat != SWEET_FMT('A', '0', '0', '8') && odd_logged < 24) {
++		char tag[64];
++		proc_selfname(tag, sizeof(tag));
++		snprintf(tag + strlen(tag), sizeof(tag) - strlen(tag), " surf %u fmt 0x%x", s->id, s->pixelFormat);
++		odd_logged++;
++		sweet_user_backtrace(tag);
++	}
+ 	props->release();
+ 	if (ret != kIOReturnSuccess) {
+ 		s->release();
+@@ -772,6 +854,12 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 		sweet_surf_log_once("sel", selector);
+ 		return kIOReturnSuccess;
+ 	}
++	case 6:                 /* wrap client image (CA's GLES renderer, zero-copy bitmaps) */
++	case 7:                 /* wrap client memory */
++		/* Not supported: refuse, the library returns NULL and CA uploads instead.
++		 * Faking success left clients without memory (crash in backboardd, 0151b). */
++		sweet_surf_log_once("sel", selector);
++		return kIOReturnUnsupported;
+ 	default:
+ 		/* Values, notifications, ownership, timestamps...: accept and ignore. */
+ 		for (uint32_t i = 0; i < args->scalarOutputCount; i++) {
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index fbcdfac..41be9ea 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -39,6 +39,8 @@ public:
+ 	IOOptionBits              mapCache;     /* cache mode for user mappings */
+ 	IOBufferMemoryDescriptor *state;        /* shared state page, read-only for users */
+ 	IOMemoryMap              *kernelMap;    /* lazily created for kernel copies */
++	bool                      clientMemory; /* the creator's pages (IOSurfaceAddress), prepared */
++	bool                      readOnly;     /* ...from a read-only mapping: mapped read-only */
+ 
+ 	bool init() APPLE_KEXT_OVERRIDE { return OSObject::init(); }
+ 	void free() APPLE_KEXT_OVERRIDE;
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 92f3e26..f652e39 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -82,6 +82,11 @@ const char * gIOKernelConfigTables =
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = SweetBattery;"
+     "   },"
++    "   {"
++    "     'IOClass'         = SweetGPU;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = SweetGPU;"
++    "   },"
+ #endif
+     "   {"
+     "     'IOClass'         = IOPanicPlatform;"
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index acc9ae0..fd4a820 100644
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -16,6 +16,7 @@ iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitc
+ iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
+ iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
+ iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
++iokit/Kernel/arm/SweetGPU.cpp                                    optional iokitcpp
+ iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp                  optional iokitcpp
+diff --git a/osfmk/arm/io_map.c b/osfmk/arm/io_map.c
+index 18ef2f0..9c1f2d6 100644
+--- a/osfmk/arm/io_map.c
++++ b/osfmk/arm/io_map.c
+@@ -62,7 +62,13 @@
+ 
+ extern vm_offset_t virtual_space_start;     /* Next available kernel VA */
+ 
+-#define IO_MAP_SIZE            (8ul << 20)
++/*
++ * SWEET: 64 MB (was 8). The Pixel panel framebuffer alone is 6.2 MB and the
++ * SoC drivers (GPU, RPM, SPMI, UFS, USB, clocks, MDP) map dozens of pages:
++ * with 8 MB a 16 KB mapping panicked kmem_alloc depending on the boot-args
++ * (0164e, 0164h).
++ */
++#define IO_MAP_SIZE            (64ul << 20)
+ 
+ __startup_data static struct mach_vm_range io_range;
+ static SECURITY_READ_ONLY_LATE(vm_map_t) io_submap;
