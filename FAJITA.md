@@ -135,6 +135,26 @@ fastboot boot shim/out/shim-boot.img
 - **After a hang,** boot recovery and run `tools/sweet-log-pull.sh logs/boot.txt`. It finds `userdata` by name.
 - **Touch starts 45 s after boot** (`sweettouchdelay`), so a hang there can't hide earlier logs.
 
+## GPU (Adreno 630), branch `fajita-gpu`: work in progress
+
+The approach and most of the plumbing come from [joranv1/ios-sailfish](https://github.com/joranv1/ios-sailfish), which brought up the Adreno 530 on the Pixel 1. Credit for the design goes to them: the SweetGPU IOKit user client, the `sweet_gpu.h` kernel API, the IOSurface fixes, `sweetenv` dylib injection, and Mesa freedreno running behind an `IOAcceleratorES` service. Patch `0085-fajita-gpu-plumbing.patch` carries that plumbing unchanged, plus a read-only cmd-db lookup for the GMU (`sweet_rpmh_cmd_db_aux`).
+
+Still missing: the A630 hardware driver `bsd/dev/sweet_gpu_a6xx.c` (planned as patch 0086). The kernel on this branch does not build until it exists, so use `fajita` for normal boots.
+
+Firmware comes from your own phone and is never committed:
+
+```
+./fajita.sh gpu-fw              # prints the adb pull commands
+./fajita.sh gpu-fw build/gpu-fw-src
+SWEETGPU=1 ./fajita.sh phone    # boot image with the blobs + sweetgpu=1
+```
+
+`tools/fajita-gpu-fw.py` checks the files and squashes a split zap shader (`a630_zap.mdt` + `.b0N`) into `a630_zap.mbn`. `mkpayload.py --blob` (also from ios-sailfish) puts the files in the ADT as `GPU-SQE`, `GPU-GMU` and `GPU-ZAP`.
+
+Bring-up levels for `sweetgpu=` (0 = off, the default): 1 clocks and power + GPU id, 2 adds IOMMU + GMU + HFI, 3 adds the command processor + zap shader + a self-test, 8 is service mode for the userland. Step up one level per boot; after a hang, the UFS log shows the last stage reached.
+
+After the kernel driver: Turnip (Mesa's Vulkan driver) on the same interface, then a Metal driver bundle on top of Vulkan, registered through `IOAcceleratorES` `MetalPluginName`.
+
 ## Review
 
 Every register address and protocol detail was checked against mainline Linux (and, for the display and clocks, OnePlus's downstream SDM845 kernel) by a separate review pass. Its fixes are in: SDM845-only QUP clock votes, no `CTL_START` while autorefresh runs, correct RMI4 bootloader checks (F01 bit 6, F34 bit 7), function base `0x00` accepted, PDT-sized interrupt reads, Linux-compatible descriptor truncation, and the splash-pipe check. The IMEM restart-reason address on the 6T turned out to differ from sweet's (`0x146bf65c`), so dropping that write was right.

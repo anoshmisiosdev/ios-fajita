@@ -8,6 +8,7 @@
 #   ./fajita.sh root             build the iOS root image for the phone (sudo)
 #   ./fajita.sh qemu-smoke       boot the kernel alone in QEMU (~1 min)
 #   ./fajita.sh qemu-ios         boot iOS in QEMU from a RAM disk and save screenshots
+#   ./fajita.sh gpu-fw [DIR]     collect the Adreno 630 firmware pulled off your phone
 #   ./fajita.sh phone            build the boot image for the real phone
 #
 # Everything lands in build/ (git-ignored). Steps are re-runnable: finished
@@ -20,6 +21,7 @@
 #   GITHUB_TOKEN=...          for artifact downloads when `gh` is not logged in
 #   QEMU_SECS=10800           how long qemu-ios runs (seconds, default 3 h)
 #   QEMU_ACCEL=auto|tcg|kvm|hvf
+#   SWEETGPU=0                GPU bring-up level for the phone (0 off; see FAJITA.md)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -257,6 +259,25 @@ cmd_qemu_ios() {
 	say "last screen: build/qemu-ios/out/fb.png; the whole run: build/qemu-ios/out/snaps/"
 }
 
+# ---------------------------------------------------------------- gpu-fw
+cmd_gpu_fw() {
+	local src=${1:-$B/gpu-fw-src}
+	if [[ ! -f $src/a630_sqe.fw ]]; then
+		mkdir -p "$src"
+		cat <<-EOF
+		  Pull the GPU firmware from your phone (Android or a recovery with adb), then rerun:
+		    adb pull /vendor/firmware/a630_sqe.fw $src/
+		    adb pull /vendor/firmware/a630_gmu.bin $src/
+		    adb shell ls /vendor/firmware/a630_zap.* /vendor/firmware_mnt/image/a630_zap.*
+		    adb pull /vendor/firmware/a630_zap.mdt $src/    # and every a630_zap.b0N listed
+		  (on some builds the zap files are under /vendor/firmware_mnt/image/)
+		  then: ./fajita.sh gpu-fw $src
+		EOF
+		return 0
+	fi
+	python3 tools/fajita-gpu-fw.py "$src" "$B/gpu-fw"
+}
+
 # ---------------------------------------------------------------- phone
 cmd_phone() {
 	need "phone image" aarch64-linux-gnu-gcc mkbootimg cpio gzip python3 || exit 1
@@ -265,8 +286,14 @@ cmd_phone() {
 	[[ -f research/ipsw-x/d22ap.adt ]] || warn "no research/ipsw-x/d22ap.adt (run ./fajita.sh ipsw): iOS will not know it is an iPhone X"
 	mkdir -p shim/out
 	python3 tools/mkadt.py shim/out/fajita.adt --highmem
-	python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/fajita.adt shim/out/payload.bin \
-		--cmdline 'debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetusb=2' >/dev/null
+	local gpu=${SWEETGPU:-0} blobs=()
+	if [[ $gpu != 0 ]]; then
+		[[ -f $B/gpu-fw/a630_zap.mbn ]] || die "SWEETGPU=$gpu needs the GPU firmware: ./fajita.sh gpu-fw"
+		blobs=(--blob "GPU-SQE=$B/gpu-fw/a630_sqe.fw" --blob "GPU-GMU=$B/gpu-fw/a630_gmu.bin" --blob "GPU-ZAP=$B/gpu-fw/a630_zap.mbn")
+		say "GPU bring-up level sweetgpu=$gpu (firmware from build/gpu-fw)"
+	fi
+	python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/fajita.adt shim/out/payload.bin ${blobs[@]+"${blobs[@]}"} \
+		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetusb=2 sweetgpu=$gpu" >/dev/null
 	shim/build.sh ../shim/out/payload.bin >/dev/null
 	say "phone boot image: shim/out/shim-boot.img"
 	cat <<-EOF
@@ -284,8 +311,9 @@ ipsw)       shift; cmd_ipsw "$@" ;;
 root)       cmd_root ;;
 qemu-smoke) cmd_qemu_smoke ;;
 qemu-ios)   cmd_qemu_ios ;;
+gpu-fw)     shift; cmd_gpu_fw "$@" ;;
 phone)      cmd_phone ;;
 all)        cmd_deps || die "install the missing tools first"
             cmd_kernel; cmd_ipsw; cmd_root; cmd_qemu_smoke; cmd_qemu_ios ;;
-*)          sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' ;;
+*)          sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac
