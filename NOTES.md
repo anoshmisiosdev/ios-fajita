@@ -11,6 +11,15 @@
   ios-sailfish's diagnostic patch) had not been carried over. `0a23f5d` adds it to
   0085; the updated 0085 was checked by reverse-applying the old one and applying the
   new one to the resulting 0001-0084 tree, and 0086 applies to an empty tree.
+- **GMU highmem fix (2026-10-22):** 0086 now gives the GMU SMMU stream 5 its own
+  CB1 (4 KB-granule stage-1, T0SZ=32, S2 bypass) instead of aliasing CB0. The
+  GMU dummy/debug/HFI/log buffers are mapped at IOVAs 0x60000000/0x60001000/
+  0x60005000/0x60009000; `HFI_QTBL_ADDR`, `PWR_COL_CP_MSG`, the HFI queue
+  headers and the INIT message use those IOVAs, and the old "buffers above
+  4 GB" reject is gone. Mainline `a6xx_gmu_rpmh_init()` is ported (RSCC at
+  GMU+0x23000, PDC at 0xb280000, PDC seq at 0xb480000, `pdc_address_offset`
+  0x30080, non-a650 sequencer values) and runs once before the first
+  `gmu_load_fw()`.
 - NOT booted on hardware yet. `sweetgpu=` default 0 does nothing, so the branch boots
   like `fajita`. Levels: 1 clocks/GDSC + chip id; 2 SMMU + GMU/HFI + GPU register
   reads; 3 CP + zap + sample4 compute self-test; 8 API/service self-test (`g_ready`).
@@ -30,7 +39,11 @@
 - Open risks: SMMU faults are only logged (SCTLR=0x7, no IRQ handler); the HFI TEST
   ack is ignored by design (mainline does the same); the GMU blob must be the V2
   firmware; zap PAS ID 13 and the fixed carveout `0x8c415000`; the compute self-test
-  depends on the assembled sample4 binary and the A6xx state sequence.
+  depends on the assembled sample4 binary and the A6xx state sequence. The new CB1
+  path is not hardware-verified: T0SZ=32, CBAR1/CBA2R1 and the SMR1/SID-5 match
+  assume the Adreno SMMU layout; the 16 KB log buffer still uses `|3` (mainline uses
+  4 KB); `gpu_alloc` still rejects PAs outside 2-8 GB; and the RSCC/PDC writes may be
+  secure-world owned. Hardware levels 1-3 remain unproven.
 - Firmware, device dumps and serials stay out of git. Unfinished: hardware bring-up
   (levels 1 -> 8), then Turnip behind the client, then the Metal/`IOAcceleratorES`
   bundle.
