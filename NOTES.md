@@ -303,6 +303,22 @@
   (its device setup moved to `test/test_device.h`, shared with metal_render).
   Not done: depth, blending, samplers/texture reads, vertex descriptors, and any
   on-screen path (CAMetalLayer / IOSurface present).
+- **That render milestone's CI (2026-10-22, observation):** pushed as `d9aa361`;
+  run **39868721132 SUCCESS** — `ios` 5m49s, `lavapipe` 2m48s, `driver` 19s. The
+  new evidence is the **`lavapipe` job running `tests/render.c` on Linux**
+  (ubuntu-24.04, noble's Lavapipe): `device: llvmpipe (LLVM 20.1.2, 256 bits)`,
+  `render pipeline: colored_vertex + colored_fragment, RGBA8Unorm`,
+  `status: Completed`, the 8×8 map (`####....` ×4, `........` ×4), `every texel
+  as expected: the top-left quarter drawn, the rest cleared`,
+  `sweetmtl-bridge: render_to_texture through the C ABI: OK` — after the compute
+  test's `OK` as before. So rendering through the bridge is seen on a second,
+  unrelated Vulkan driver (a CPU rasterizer, not Apple's GPU). On it metal2vulkan
+  adds one note the MoltenVK run did not:
+  `[metal2vulkan-degrade-shader-color-conversion]` (Lavapipe's float→unorm
+  rounding is not Metal's near a tie, so the fragment function rounds itself).
+  The `driver` job built `metal_render` (`Mach-O 64-bit executable arm64`, sha256
+  69976044…ab96fc4) and `triangle.metallib` (Apple metal 32023.157, sha256
+  29b16110…de28d1f) for iphoneos and uploaded them in `sweetmtl-driver-ios`.
 - **Pipeline status (2026-10-22, observation):** the kernel hook, the bridge
   (`tools/sweetmtl/bridge/`) and `tools/sweetmtl/out/SweetMTLDriver.bundle`
   (driver + bridge + tool, iphoneos arm64) are built. There is no Turnip /
