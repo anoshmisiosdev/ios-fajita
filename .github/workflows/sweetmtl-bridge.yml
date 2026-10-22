@@ -1,0 +1,70 @@
+name: sweetmtl-bridge
+
+# The C ABI over metal2vulkan's runtime that SweetMTLDevice (backboardd on the phone) links: it is
+# built for the device here, so a change that only compiles on the host still fails the build.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, fajita-gpu]
+    paths:
+      - "tools/sweetmtl/bridge/**"
+      - ".github/workflows/sweetmtl-bridge.yml"
+  pull_request:
+    paths:
+      - "tools/sweetmtl/bridge/**"
+
+concurrency:
+  group: sweetmtl-bridge-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ios:
+    runs-on: macos-14
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: tools/sweetmtl/bridge
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup --version || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          . "$HOME/.cargo/env"
+          rustup target add aarch64-apple-ios
+          rustc --version
+          cargo --version
+
+      - name: Build for the device
+        run: |
+          . "$HOME/.cargo/env"
+          cargo build --release --target aarch64-apple-ios
+
+      - name: Header is regenerated from the sources
+        run: |
+          . "$HOME/.cargo/env"
+          cargo install cbindgen --version 0.29.4 --locked
+          sh ./generate-header.sh
+          git diff --exit-code -- include/sweetmtl_bridge.h || {
+            echo "include/sweetmtl_bridge.h has drifted: commit the output of generate-header.sh" >&2
+            exit 1
+          }
+
+      - name: Stage
+        run: |
+          mkdir -p out
+          cp target/aarch64-apple-ios/release/libsweetmtl_bridge.a out/
+          cp target/aarch64-apple-ios/release/libsweetmtl_bridge.dylib out/
+          cp include/sweetmtl_bridge.h out/
+          (cd out && shasum -a 256 * > SHA256SUMS)
+          file out/*.a out/*.dylib
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sweetmtl-bridge-ios
+          path: tools/sweetmtl/bridge/out/
+          if-no-files-found: error

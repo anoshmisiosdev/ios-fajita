@@ -1,0 +1,32 @@
+[package]
+name = "sweetmtl-bridge"
+version = "0.1.0"
+edition = "2021"
+# metal2vulkan's floor (`rust-version` in its workspace manifest).
+rust-version = "1.98"
+# metal2vulkan is `GPL-2.0-or-later OR LGPL-3.0-or-later`; this crate links it, so it carries the
+# same choice. See NOTICE.
+license = "GPL-2.0-or-later OR LGPL-3.0-or-later"
+description = "A stable C ABI over metal2vulkan's runtime (the Metal API on Vulkan), for SweetMTL's Objective-C driver"
+repository = "https://github.com/anoshmisiosdev/ios-sweet"
+publish = false
+
+[lib]
+name = "sweetmtl_bridge"
+# `staticlib` and `cdylib` for backboardd (SweetMTLDevice links one of them); `rlib` so the
+# crate's own tests and `cargo check` can use it.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+# ONE revision of steelbrain/metal2vulkan, twice: the translator crate (`metal2vulkan`, which
+# provides the device description and the enable vocabulary this bridge adopts a device with)
+# and the runtime (`metal2vulkan-runtime`, the Metal API on Vulkan the bridge drives).
+metal2vulkan = { git = "https://github.com/steelbrain/metal2vulkan", rev = "a2c440b8bcdcf20d34aa1694b61ae22c2a7ea68b", features = ["ash"] }
+metal2vulkan-runtime = { git = "https://github.com/steelbrain/metal2vulkan", rev = "a2c440b8bcdcf20d34aa1694b61ae22c2a7ea68b" }
+
+# Feature `loaded` gives `Entry::from_static_fn`, `Instance::load` and `Device::load`: the bridge
+# opens the ICD itself, because a bare Mesa ICD (`vk_icdGetInstanceProcAddr`) is not a loader and
+# iOS has no Vulkan loader at all.
+ash = { version = "0.38", default-features = false, features = ["std", "loaded"] }
+# dlopen/dlsym for the ICD path.
+libc = "0.2"

@@ -89,9 +89,42 @@
   (pre-existing: the pre-0087 kernel `f4003e4` halts at the same PC, `_halt_all_cpus`
   +0x34, with the same screen). This proves registration only; Metal actually
   loading the bundle needs the phone.
+- **Vulkan bridge for the Metal driver (2026-10-22, observation):** new
+  `tools/sweetmtl/bridge/` = `sweetmtl-bridge`, a Rust staticlib + cdylib
+  (`tools/sweetmtl/bridge/Cargo.toml`, pinned to ONE metal2vulkan revision
+  `a2c440b` for both the translator and the runtime; GPL-2.0-or-later OR
+  LGPL-3.0-or-later). It is the C ABI `SweetMTLDevice` will call: 33 functions /
+  8 opaque handles (device + name, buffer + contents/length, library, function,
+  compute pipeline, queue, command buffer, compute encoder: set pipeline, set
+  buffer, dispatch, end, commit, wait, status), generated header
+  `include/sweetmtl_bridge.h`, no Rust type across the boundary, no panic across
+  it (`catch_unwind`). Device: it opens the ICD named by path/argument
+  (`SWEETMTL_VK_ICD`), takes its only exported entry point
+  `vk_icdGetInstanceProcAddr`, makes the instance (1.2) and device itself and
+  adopts them with `Device::from_raw` (`RawDevice`) — iOS has no Vulkan loader,
+  and `DeviceOptions.loader` needs a real loader library. Features: one
+  `vkGetPhysicalDeviceFeatures2` query chaining the 1.1/1.2 core structures, and
+  those same structures are chained into `VkDeviceCreateInfo` — "enable exactly
+  what the device reports", no copy of the runtime's private member table.
+  Asked for: `cargo check` and `cargo build --release` for `aarch64-apple-ios`
+  pass, and CI job `.github/workflows/sweetmtl-bridge.yml` builds and uploads
+  `.a`/`.dylib`/header. **Tested against bare Lavapipe (macOS Mesa 26.0.2,
+  LLVM 22.1, no loader):** device creation/name, library, function, compute
+  pipeline, encoder, buffers and `commit` all succeed — but
+  `wait_until_completed` then dies SIGSEGV inside `libLLVM.dylib`'s
+  `DAGTypeLegalizer::PromoteIntRes_Select`, i.e. Lavapipe's *own* shader
+  compiler on a worker thread, with no bridge frame in the stack. Controls: a
+  hand-written trivial SPIR-V kernel dispatches cleanly on the same ICD, and so
+  does metal2vulkan's cached module in a runtime-free program, so this is
+  llvmpipe's LLVM JIT on this macOS/arm64/LLVM-22.1 build, not the bridge.
+  Hazard worth remembering: ash's `push_next` rewires the *pushed* structure's
+  existing chain, so reusing the query's `v11`/`v12` in the create info made a
+  circular `pNext` chain and `vkCreateDevice` never returned; `p_next` is
+  cleared before reuse. Not yet: the C test on Linux (the ICD path it defaults
+  to), a Turnip run, or any Objective-C caller.
 - **Pipeline status (2026-10-22, observation):** only the kernel hook and
   `tools/sweetmtl/out/SweetMTLDriver.bundle` are built. There is no Turnip /
-  `libvulkan_freedreno.dylib`, no metal2vulkan translator, no `libvulkan*` and no
+  `libvulkan_freedreno.dylib`, no Turnip, no `libvulkan*` and no
   `sweetgl` anywhere; Mesa 23.1 + newer sources exist only in the session temp dir
   (`…/opencode/a6xx/`). That is the next build step.
 - Firmware, device dumps and serials stay out of git. Unfinished: hardware bring-up

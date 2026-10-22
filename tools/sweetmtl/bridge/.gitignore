@@ -1,0 +1,6 @@
+# cargo's build tree (the crates this links are big: ~70 MB staticlib)
+/target/
+# tests/run.sh's compiled test binary
+/tests/compute
+# the CI job's staged artifacts
+/out/

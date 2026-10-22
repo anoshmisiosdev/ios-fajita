@@ -1,0 +1,65 @@
+The SweetMTL bridge (tools/sweetmtl/bridge)
+
+Copyright (C) 2026 the ios-sweet contributors.
+
+This crate is dual-licensed, at your choice, under either of these two
+licenses:
+
+  * the GNU General Public License as published by the Free Software
+    Foundation, either version 2 of the License, or (at your option) any
+    later version; or
+
+  * the GNU Lesser General Public License as published by the Free
+    Software Foundation, either version 3 of the License, or (at your
+    option) any later version.
+
+SPDX-License-Identifier: GPL-2.0-or-later OR LGPL-3.0-or-later
+
+The license texts are the ones metal2vulkan ships, at the pinned revision
+below (crates/metal2vulkan/LICENSE-GPL-2.0, LICENSE-GPL-3.0, LICENSE-LGPL-3.0):
+copy them beside any binary this crate is built into.
+
+--------------------------------------------------------------------------------
+
+This crate links metal2vulkan and metal2vulkan-runtime, and works only through
+their API. They are dual-licensed too, under the same choice:
+
+  Copyright (C) Anees Iqbal <hello@aneesiqbal.ai>
+  https://github.com/steelbrain/metal2vulkan
+  SPDX-License-Identifier: GPL-2.0-or-later OR LGPL-3.0-or-later
+
+Pinned revision (Cargo.toml, both dependencies):
+
+  a2c440b8bcdcf20d34aa1694b61ae22c2a7ea68b
+
+Their own notice follows, verbatim:
+
+  metal2vulkan is dual-licensed. You can redistribute it and/or modify it
+  under the terms of either of these two licenses, at your choice:
+
+    * the GNU General Public License as published by the Free Software
+      Foundation, either version 2 of the License, or (at your option) any
+      later version; or
+
+    * the GNU Lesser General Public License as published by the Free
+      Software Foundation, either version 3 of the License, or (at your
+      option) any later version.
+
+  The license texts are in these files:
+
+    LICENSE-GPL-2.0    the GNU General Public License, version 2
+    LICENSE-LGPL-3.0   the GNU Lesser General Public License, version 3
+    LICENSE-GPL-3.0    the GNU General Public License, version 3, whose
+                       terms the GNU Lesser General Public License,
+                       version 3 incorporates
+
+  metal2vulkan is distributed in the hope that it will be useful, but
+  WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+  or FITNESS FOR A PARTICULAR PURPOSE. See the license you choose for more
+  details.
+
+--------------------------------------------------------------------------------
+
+The Vulkan driver the bridge adopts is not part of this crate and keeps its
+own license: Mesa's Turnip (freedreno) on the phone, Mesa's Lavapipe on a test
+machine. Neither is redistributed here.

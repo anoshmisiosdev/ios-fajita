@@ -1,0 +1,28 @@
+# cbindgen's configuration for `include/sweetmtl_bridge.h`.
+#
+# `style = "type"` is what makes the output idiomatic C for the Objective-C consumer: every handle
+# becomes `typedef struct { void *_state; } SweetMTL…;` (no tag), and every function and field
+# names it `SweetMTL… *`, not `struct SweetMTL… *`.
+#
+# `(deny warnings)` — regenerate with `./generate-header.sh` and commit the result; the CI job
+# regenerates it too and fails when the committed header is stale.
+
+language = "C"
+style = "type"
+include_guard = "SWEETMTL_BRIDGE_H"
+cpp_compat = true
+documentation = true
+documentation_style = "c99"
+tab_width = 4
+line_length = 100
+usize_is_size_t = true
+# No `#include`s of the dependency crates: the header is self-contained, and only types the bridge
+# itself names appear in it.
+no_includes = false
+
+[parse]
+parse_deps = false
+
+[export]
+# Everything the crate exports is this ABI: no rename, no prefix beyond the names themselves.
+prefix = ""
