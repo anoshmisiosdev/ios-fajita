@@ -188,6 +188,26 @@
   `paths:` now covers `tools/sweetmtl/**`. Not done: the metallib path on the
   phone, the `--host` build in CI (it needs a local `cargo build` of the bridge;
   the self-check stays local), and any boot with the bundle + Turnip together.
+- **That driver's CI (2026-10-22, observation):** pushed as `b4ddeb3`; run
+  **39863197926 SUCCESS** — `ios` 5m50s, `lavapipe` 2m30s, `driver` 23s. (All
+  three jobs landed on a `macos-14-arm64` image this time, which is why `ios`
+  was 5m50s against 16m55s in run 39794500492; the runner repeats GitHub's
+  "capacity constraints" note.) The `ios` job's `libsweetmtl_bridge.a` is
+  70 979 320 bytes, its `.dylib` 21 954 760, and the header-drift check passed.
+  The **`driver` job is the new evidence**: it downloaded `sweetmtl-bridge-ios`
+  (artifact ID 12463156590, zip 28 146 015 bytes,
+  sha256 3a7281c002e4c80b2fbaeba1bc9d35f6638c5a89e86bcee41b4f11bcb88e2625),
+  ran `sh build.sh` with `SWEETMTL_BRIDGE_ARTIFACT` pointing at it, and produced
+  `out/SweetMTLDriver.bundle` and `out/metal_compute` (`Mach-O 64-bit bundle
+  arm64` / `Mach-O 64-bit executable arm64`) plus `out/scale_and_offset.metallib`
+  (Apple metal 32023.157 — the runner's Xcode does have the Metal compiler, so
+  that conditional step ran rather than being skipped), and uploaded
+  `sweetmtl-driver-ios` (ID **12463615245**, zip 11 829 688 bytes, 7 files,
+  sha256 28ab77e3d9c181fa5abf6eb7d4ad1f1825b98a00e02d26270c2281954a45b640) with
+  an `out/SHA256SUMS`. So the ObjC side, its link against the bridge artifact and
+  the tool's own compile are checked for iphoneos in CI, not first on the phone.
+  The `lavapipe` job again ended in `status: Completed` / `output[999] = 2997: as
+  expected` / `OK`.
 - **Pipeline status (2026-10-22, observation):** the kernel hook, the bridge
   (`tools/sweetmtl/bridge/`) and `tools/sweetmtl/out/SweetMTLDriver.bundle`
   (driver + bridge + tool, iphoneos arm64) are built. There is no Turnip /

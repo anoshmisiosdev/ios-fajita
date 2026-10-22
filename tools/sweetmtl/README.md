@@ -224,6 +224,12 @@ runs, against `llvm-as` output).
 - **The C ABI under it passes on Linux** — the same dispatch with the same
   expected results, from the ICD's `vk_icdGetInstanceProcAddr` to the read-back
   (see `bridge/` below). That is what the CI `lavapipe` job runs.
+- **The same build runs in CI**, in the workflow's `driver` job (run
+  39863197926 on `b4ddeb3`): the `ios` job's `libsweetmtl_bridge.a` comes back as
+  an artifact, `sh build.sh` runs against it, and the bundle, the tool and the
+  metallib are uploaded as `sweetmtl-driver-ios`. That is compiling and linking
+  for iphoneos only — nothing on a runner executes the driver, because nothing
+  there has an accelerator.
 - **Never tested: on the phone.** No `fajita-gpu` boot has had `sweetaccel=1`,
   the bundle and a Turnip build together yet. The first thing to read in that log
   is the `sweetmtl:` lines — the port, the ICD it chose, the device name — and

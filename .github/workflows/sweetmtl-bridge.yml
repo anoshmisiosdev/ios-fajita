@@ -9,10 +9,15 @@ on:
     branches: [main, fajita-gpu]
     paths:
       - "tools/sweetmtl/**"
+      # …but not the prose: a README/NOTES edit under tools/sweetmtl/ does not need a bridge build.
+      - "!tools/sweetmtl/*.md"
+      - "!tools/sweetmtl/**/*.md"
       - ".github/workflows/sweetmtl-bridge.yml"
   pull_request:
     paths:
       - "tools/sweetmtl/**"
+      - "!tools/sweetmtl/*.md"
+      - "!tools/sweetmtl/**/*.md"
 
 concurrency:
   group: sweetmtl-bridge-${{ github.ref }}
