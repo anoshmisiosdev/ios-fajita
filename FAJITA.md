@@ -139,7 +139,7 @@ fastboot boot shim/out/shim-boot.img
 
 The approach and most of the plumbing come from [joranv1/ios-sailfish](https://github.com/joranv1/ios-sailfish), which brought up the Adreno 530 on the Pixel 1. Credit for the design goes to them: the SweetGPU IOKit user client, the `sweet_gpu.h` kernel API, the IOSurface fixes, `sweetenv` dylib injection, and Mesa freedreno running behind an `IOAcceleratorES` service. Patch `0085-fajita-gpu-plumbing.patch` carries that plumbing unchanged, plus a read-only cmd-db lookup for the GMU (`sweet_rpmh_cmd_db_aux`).
 
-Still missing: the A630 hardware driver `bsd/dev/sweet_gpu_a6xx.c` (planned as patch 0086). The kernel on this branch does not build until it exists, so use `fajita` for normal boots.
+Patch `0086-fajita-adreno630.patch` adds the A630 hardware driver, `bsd/dev/sweet_gpu_a6xx.c`: GCC/GPUCC clocks and the CX GDSC, the GPU SMMU, the GMU with HFI (firmware, arc votes, queues), the command processor with the zap shader and a compute self-test, and the service mode for the userland. It is polling-only (no interrupts) and gets its firmware from the phone (below). With `sweetgpu=0` (the default) it does nothing, so the branch boots like `fajita`.
 
 Firmware comes from your own phone and is never committed:
 
