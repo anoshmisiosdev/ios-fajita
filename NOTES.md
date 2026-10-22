@@ -45,6 +45,14 @@
   assume the Adreno SMMU layout; the 16 KB log buffer still uses `|3` (mainline uses
   4 KB); `gpu_alloc` still rejects PAs outside 2-8 GB; and the RSCC/PDC writes may be
   secure-world owned. Hardware levels 1-3 remain unproven.
+- **GPU address layout (non-blocking):** the GPU side still uses physical
+  addresses up to 8 GB for the identity map and 8-16 GB for client buffers,
+  while mainline Linux keeps A630 addresses below 4 GB. If level 3 or 8 shows
+  strange GPU faults, check this first.
+- **GPU client isolation (bring-up only):** there is no register protection
+  and every client shares one address space covering PA 2-8 GB, so any GPU
+  client can reach all RAM. This is acceptable for bring-up; it belongs to the
+  security work (per-client address spaces, CP_PROTECT, etc.).
 - Firmware, device dumps and serials stay out of git. Unfinished: hardware bring-up
   (levels 1 -> 8), then Turnip behind the client, then the Metal/`IOAcceleratorES`
   bundle.
