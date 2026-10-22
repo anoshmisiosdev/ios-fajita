@@ -168,4 +168,4 @@ Every register address and protocol detail was checked against mainline Linux (a
 
 ## Not in this port (same as sweet)
 
-There is no GPU (CPU rendering at ~20–30 fps), and no Wi-Fi, Bluetooth, cellular, audio, cameras, sensors or Face ID. Security is mostly switched off, so don't put anything personal on it.
+There is no GPU on the base `fajita` branch (CPU rendering at ~20–30 fps; the `fajita-gpu` branch adds the A630 bring-up described above), and no Wi-Fi, Bluetooth, cellular, audio, cameras, sensors or Face ID. Security is mostly switched off, so don't put anything personal on it.

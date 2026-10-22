@@ -1,5 +1,40 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> fajita-gpu branch (OnePlus 6T, Adreno 630), 2026-10-21 - read the GPU section of FAJITA.md first <<<
+- Branch `fajita-gpu` = `fajita` + 0085 (ios-sailfish GPU plumbing: SweetGPU user
+  client, `bsd/dev/sweet_gpu.h`, IOSurface changes, `sweet_rpmh_cmd_db_aux`) + 0086
+  (`bsd/dev/sweet_gpu_a6xx.c`: GCC/GPUCC clocks + CX GDSC, SMMU, GMU/HFI, CP + zap +
+  compute self-test, service mode). 0086 adds only the new file.
+- **Build: CI run 39719692717 SUCCESS (7m8s) on `0a23f5d`.** The previous run,
+  39717151806, compiled the driver but failed to link `sweet_user_backtrace`: 0085's
+  `SweetSurface.cpp` calls it, and the function (`osfmk/kern/exception.c`, from
+  ios-sailfish's diagnostic patch) had not been carried over. `0a23f5d` adds it to
+  0085; the updated 0085 was checked by reverse-applying the old one and applying the
+  new one to the resulting 0001-0084 tree, and 0086 applies to an empty tree.
+- NOT booted on hardware yet. `sweetgpu=` default 0 does nothing, so the branch boots
+  like `fajita`. Levels: 1 clocks/GDSC + chip id; 2 SMMU + GMU/HFI + GPU register
+  reads; 3 CP + zap + sample4 compute self-test; 8 API/service self-test (`g_ready`).
+- Source of truth: mainline Linux (a6xx, GMU, HFI, catalog, gpucc/gcc-sdm845, gdsc,
+  arm-smmu, mdt_loader, sdm845.dtsi), Mesa 23.1 (computerator/ir3) and joranv1/
+  ios-sailfish's A530 driver. Observations vs guesses: every register offset/field
+  was checked against the XML headers; hardware behaviour (SMMU SCTLR=0x7, GMU boot
+  and HFI timing, zap PAS, arc votes, the A6xx compute state sequence) is unproven.
+- First hardware step: `SWEETGPU=1 ./fajita.sh phone` with this phone's three blobs
+  (`GPU-SQE`, `GPU-GMU`, `GPU-ZAP`), boot `sweetgpu=1`, look for "SWEET GPU: Adreno
+  630 bring-up level 1", "chip_id 06030002" and "level 1 done". Then 2: the "SMMU
+  cb0ttbr ... sctlr" line, "GMU firmware init result", "HFI init -> 0", perf/bw
+  tables. Then 3: "CP marker c0ffee01 (... command processor works)", the zap lines,
+  "level 3 sample4 selftest: quad 0, 64x64 copy matches". Then 8: "api selftest:
+  quad and submit work", "service on". One level per boot. A hang at 2/3 leaves no
+  console; use `sweetusb=2` + `tools/sweet-usbnet.sh` (live log) or the recovery pull.
+- Open risks: SMMU faults are only logged (SCTLR=0x7, no IRQ handler); the HFI TEST
+  ack is ignored by design (mainline does the same); the GMU blob must be the V2
+  firmware; zap PAS ID 13 and the fixed carveout `0x8c415000`; the compute self-test
+  depends on the assembled sample4 binary and the A6xx state sequence.
+- Firmware, device dumps and serials stay out of git. Unfinished: hardware bring-up
+  (levels 1 -> 8), then Turnip behind the client, then the Metal/`IOAcceleratorES`
+  bundle.
+
 ## >>> fajita branch (OnePlus 6T, SDM845), 2026-10-19 - read FAJITA.md first <<<
 - Branch `fajita` = upstream ios-sweet 11da58b + fajita shim/tools + kernel patches 0082-0084.
 - NOT booted yet. Shim builds (`shim/build.sh`, Image.gz + appended stock DTB, boot.img v0);
