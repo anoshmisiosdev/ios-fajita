@@ -61,6 +61,19 @@
   `sweet_amfi_vnode_check_signature`. Still missing: an A630 build of `tools/sweetgl`
   and its install to `/usr/lib/sweetgl.dylib`; until then the injection is a tolerated
   no-op. None of this is booted with it yet.
+- **Metal loading hook + SweetMTL scaffold (2026-10-22):** patch **0087**
+  (`iokit/Kernel/arm/SweetGPU.cpp`) publishes an `IOAcceleratorES` when
+  `sweetaccel=1` and sets `MetalPluginName`/`MetalPluginClassName` from
+  `sweetmtl=`/`sweetmtlclass=`. That is Metal.framework's own unsigned-driver
+  hook (the pair `NVAccel.kext` sets on macOS to load `NVMTLDriver.bundle`);
+  ios-sailfish's `0166` leaves `MetalPluginName` unset on purpose so CA uses
+  GLES. New `tools/sweetmtl/` builds `SweetMTLDriver.bundle` (class
+  `SweetMTLDevice : MTLIOAccelDevice`, `-initWithAcceleratorPort:`, ad-hoc
+  signed) and installs to `/usr/lib/sweetmtl/`. `build.sh` compiles clean for
+  iphoneos arm64 (bundle, ad-hoc). Not yet: the metal2vulkan translator
+  (steelbrain/metal2vulkan; reference impl: nullmoth/nvidia-macos-driver) and
+  Mesa Turnip (`libvulkan_freedreno.dylib`); and `MTLIOAccelDevice` must exist in
+  iOS's Metal.framework (unverified). Never booted.
 - Firmware, device dumps and serials stay out of git. Unfinished: hardware bring-up
   (levels 1 -> 8), then Turnip behind the client, then the Metal/`IOAcceleratorES`
   bundle.

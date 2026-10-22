@@ -154,7 +154,7 @@ SWEETGPU=1 ./fajita.sh phone    # boot image with the blobs + sweetgpu=1
 
 Bring-up levels for `sweetgpu=` (0 = off, the default): 1 clocks and power + GPU id, 2 adds IOMMU + GMU + HFI, 3 adds the command processor + zap shader + a self-test, 8 is service mode for the userland. Step up one level per boot; after a hang, the UFS log shows the last stage reached.
 
-After the kernel driver: Turnip (Mesa's Vulkan driver) on the same interface, then a Metal driver bundle on top of Vulkan, registered through `IOAcceleratorES` `MetalPluginName`.
+After the kernel driver: Turnip (Mesa's Vulkan driver) on the same interface, then a Metal driver bundle on top of Vulkan, registered through `IOAcceleratorES` `MetalPluginName` (scaffolded in `tools/sweetmtl`, see below).
 
 ### Loading the userland driver: how an outside bundle gets in
 
@@ -187,6 +187,40 @@ Apple's GPU stack. **That library is not in this repository yet** — it is the 
 (Pixel 1) build and needs an A630 pass. Until it is copied to `/usr/lib/sweetgl.dylib`
 on the phone the `sweetenv` injection does nothing. The kernel side of the bypass is
 already in `0085`, so the boot line above is safe to use as-is.
+
+### The Metal path: `SweetMTL` and why it loads a different way
+
+The GLES driver above is a *dylib injected into `backboardd`*. A Metal driver is
+loaded differently, and it is the path we use for the freedreno/Turnip Metal
+stack (`tools/sweetmtl`). Metal.framework looks up an **`IOAcceleratorES`**
+service and reads two properties off it — the same pair `NVAccel.kext` sets on
+macOS to load the unsigned `NVMTLDriver.bundle`:
+
+- **`MetalPluginName`** — the driver bundle's path **without** the `.bundle`
+  suffix, resolved relative to `/System/Library/Extensions`.
+- **`MetalPluginClassName`** — the class Metal instantiates (which subclasses
+  Metal's private `MTLIOAccelDevice` and is called with
+  `-initWithAcceleratorPort:`).
+
+ios-sailfish registers an `IOAcceleratorES` **on purpose without**
+`MetalPluginName` (its `0166`), so Metal passes over it and CoreAnimation uses
+the GLES renderer. Patch `0087-fajita-ioacceleratores-metal.patch` does the
+opposite: `SweetGPU::start()` publishes the `IOAcceleratorES` and, when asked,
+the two Metal properties. It is still the code-signing relaxation in `0085`
+(`cs_enforcement_disable` + the AMFI policy) that lets the ad-hoc-signed bundle
+map into `backboardd`. Boot args:
+
+```
+sweetaccel=1
+sweetmtl=../../../usr/lib/sweetmtl/SweetMTLDriver
+sweetmtlclass=SweetMTLDevice
+```
+
+`tools/sweetmtl/build.sh` builds `SweetMTLDriver.bundle`; `push.sh` installs it
+to `/usr/lib/sweetmtl/`. The class is the load milestone today (it logs when
+Metal instantiates it and opens the Turnip Vulkan ICD); the metal2vulkan
+translation layer and Mesa Turnip are the driver body. `tools/sweetmtl/README.md`
+has the detail and the macOS reference implementation.
 
 ## Review
 

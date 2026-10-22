@@ -1,0 +1,69 @@
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -43,6 +43,7 @@
+ #include <IOKit/IOMemoryDescriptor.h>
+ #include "SweetSurface.h"
+ #include <sys/errno.h>
++#include <pexpert/pexpert.h>
+ #include "../../../bsd/dev/sweet_gpu.h"
+ 
+ extern "C" void proc_selfname(char *buf, int size);
+@@ -70,6 +71,24 @@
+ 
+ OSDefineMetaClassAndStructors(SweetGPU, IOService);
+ 
++/*
++ * IOAcceleratorES: the service class CoreAnimation/QuartzCore looks for
++ * (CAMetalContextCreate polls IOServiceMatching("IOAcceleratorES")), and the
++ * hook Metal.framework uses to load a user-space Metal driver. Metal reads two
++ * properties off this service: MetalPluginName (the driver bundle's path,
++ * without the .bundle suffix, resolved like macOS's accelerator kext property:
++ * relative to /System/Library/Extensions) and MetalPluginClassName (the class
++ * inside it to instantiate as the MTLDevice). NVAccel.kext on macOS uses the
++ * same two keys. With no MetalPluginName Metal passes over the service and CA
++ * keeps its OpenGL ES renderer (sweetgl; see FAJITA.md). The service class and
++ * the IOAcceleratorES idea come from joranv1/ios-sailfish (0166).
++ */
++class IOAcceleratorES : public IOService {
++	OSDeclareDefaultStructors(IOAcceleratorES);
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
++
+ bool
+ SweetGPU::start(IOService *provider)
+ {
+@@ -88,6 +107,32 @@
+ 	setProperty(kIOUserClientClassKey, "SweetGPUUserClient");
+ 	registerService();
+ 	IOLog("SWEET GPU: SweetGPU registered\n");
++
++	/*
++	 * sweetaccel=1 publishes the IOAcceleratorES CoreAnimation looks for;
++	 * sweetmtl=PATH (with sweetmtlclass=NAME) makes Metal load a user-space
++	 * Metal driver through it. The empty default keeps MetalPluginName unset,
++	 * so Metal passes over the service and CA stays on the GLES path.
++	 */
++	int accel = 0;
++	PE_parse_boot_argn("sweetaccel", &accel, sizeof(accel));
++	if (accel != 0) {
++		IOAcceleratorES *es = OSTypeAlloc(IOAcceleratorES);
++		if (es != NULL && es->init() && es->attach(this)) {
++			char mpath[256] = "";
++			char mclass[64] = "SweetMTLDevice";
++			if (PE_parse_boot_argn("sweetmtl", mpath, sizeof(mpath)) && mpath[0]) {
++				PE_parse_boot_argn("sweetmtlclass", mclass, sizeof(mclass));
++				es->setProperty("MetalPluginName", mpath);
++				es->setProperty("MetalPluginClassName", mclass);
++				IOLog("SWEET GPU: IOAcceleratorES Metal plugin %s class %s\n", mpath, mclass);
++			} else {
++				IOLog("SWEET GPU: IOAcceleratorES registered (no MetalPluginName: CA uses GLES)\n");
++			}
++			es->registerService();
++		}
++		OSSafeReleaseNULL(es);
++	}
+ 	return true;
+ }
+ 
