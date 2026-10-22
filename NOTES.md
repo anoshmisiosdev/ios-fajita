@@ -5,8 +5,9 @@
   client, `bsd/dev/sweet_gpu.h`, IOSurface changes, `sweet_rpmh_cmd_db_aux`) + 0086
   (`bsd/dev/sweet_gpu_a6xx.c`: GCC/GPUCC clocks + CX GDSC, SMMU, GMU/HFI, CP + zap +
   compute self-test, service mode). 0086 adds only the new file.
-- **Build: CI run 39719692717 SUCCESS (7m8s) on `0a23f5d`.** The previous run,
-  39717151806, compiled the driver but failed to link `sweet_user_backtrace`: 0085's
+- **Build: CI run 39753649103 SUCCESS (8m14s) on `f4003e4`** (GMU CB1/RPMh fix).
+  The previous build, 39719692717, was SUCCESS (7m8s) on `0a23f5d`; before that,
+  39717151806 compiled the driver but failed to link `sweet_user_backtrace`: 0085's
   `SweetSurface.cpp` calls it, and the function (`osfmk/kern/exception.c`, from
   ios-sailfish's diagnostic patch) had not been carried over. `0a23f5d` adds it to
   0085; the updated 0085 was checked by reverse-applying the old one and applying the
