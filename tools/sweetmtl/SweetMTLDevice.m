@@ -220,6 +220,21 @@ SweetMTLNoteStorageMode(MTLResourceOptions options)
 	    (unsigned long)(options & MTLResourceStorageModeMask));
 }
 
+/* Whether a pipeline descriptor's vertex descriptor declares an attribute. Metal's descriptor
+ * always has one (`vertexDescriptor` is an empty MTLVertexDescriptor, not nil, until a client
+ * fills it), so "set" means an attribute with a format; the bridge's pipelines have none, their
+ * vertex functions reading buffers by vertex_id. 31 is Metal's attribute limit. */
+static BOOL
+SweetMTLDeclaresAttributes(MTLVertexDescriptor *_Nullable vertex_descriptor)
+{
+	for (NSUInteger i = 0; vertex_descriptor != nil && i < 31; i++) {
+		if (vertex_descriptor.attributes[i].format != MTLVertexFormatInvalid) {
+			return YES;
+		}
+	}
+	return NO;
+}
+
 @implementation SweetMTLDevice {
 	/* Prefixed because this class extends Metal's private MTLIOAccelDevice: the names of its own
 	 * ivars are Apple's to take. */
@@ -393,6 +408,89 @@ SweetMTLNoteStorageMode(MTLResourceOptions options)
 		return nil;
 	}
 	return [[SweetMTLComputePipelineState alloc] initWithDevice:self handle:handle];
+}
+
+- (nullable id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
+{
+	/* The bridge makes a 2D texture of one level, one slice, one sample. A descriptor asking for
+	 * more is refused with a line naming what, rather than given a texture that is not it. */
+	if (descriptor.textureType != MTLTextureType2D || descriptor.mipmapLevelCount != 1 ||
+	    descriptor.arrayLength != 1 || descriptor.sampleCount != 1 || descriptor.depth != 1) {
+		sweetmtl_log("newTextureWithDescriptor:: type %lu, %lu levels, %lu slices, %lu samples, "
+		             "depth %lu asked for: the bridge makes 2D textures of one level, slice and "
+		             "sample",
+		    (unsigned long)descriptor.textureType, (unsigned long)descriptor.mipmapLevelCount,
+		    (unsigned long)descriptor.arrayLength, (unsigned long)descriptor.sampleCount,
+		    (unsigned long)descriptor.depth);
+		return nil;
+	}
+	SweetMTLTextureHandle *handle = sweetmtl_device_new_texture_2d(_sweetmtlBridge,
+	    (uint32_t)descriptor.pixelFormat, (uint64_t)descriptor.width, (uint64_t)descriptor.height,
+	    (uint32_t)descriptor.usage, (uint32_t)descriptor.storageMode);
+	if (handle == NULL) {
+		sweetmtl_log_failure(@"newTextureWithDescriptor:");
+		return nil;
+	}
+	return [[SweetMTLTexture alloc] initWithDevice:self
+	                                        handle:handle
+	                                         usage:descriptor.usage
+	                                   storageMode:descriptor.storageMode];
+}
+
+- (nullable id<MTLRenderPipelineState>)newRenderPipelineStateWithDescriptor:
+                                           (MTLRenderPipelineDescriptor *)descriptor
+                                                                      error:(NSError **)error
+{
+	NSString *const what = @"newRenderPipelineStateWithDescriptor:error:";
+	id<MTLFunction> vertex = descriptor.vertexFunction;
+	id<MTLFunction> fragment = descriptor.fragmentFunction;
+	if (![vertex isKindOfClass:[SweetMTLFunction class]] ||
+	    (fragment != nil && ![fragment isKindOfClass:[SweetMTLFunction class]])) {
+		sweetmtl_set_message(error, what,
+		    vertex == nil ? @"the descriptor has no vertex function"
+		                  : @"a function of the descriptor is not this device's");
+		return nil;
+	}
+	/* What the bridge's pipeline is: color attachment 0 alone, no blending, no depth or stencil,
+	 * no vertex descriptor (the vertex function reads its buffers itself), one sample. A
+	 * descriptor that sets more is refused with what, since a pipeline that quietly drops it would
+	 * draw something else. */
+	MTLRenderPipelineColorAttachmentDescriptor *color = descriptor.colorAttachments[0];
+	NSString *refusal = nil;
+	if (color.blendingEnabled) {
+		refusal = @"color attachment 0 has blending enabled: the bridge has no blending yet";
+	} else if (color.writeMask != MTLColorWriteMaskAll) {
+		refusal = @"color attachment 0 has a write mask: the bridge writes every channel";
+	} else if (descriptor.depthAttachmentPixelFormat != MTLPixelFormatInvalid ||
+	           descriptor.stencilAttachmentPixelFormat != MTLPixelFormatInvalid) {
+		refusal = @"the bridge has no depth or stencil attachments yet";
+	} else if (SweetMTLDeclaresAttributes(descriptor.vertexDescriptor)) {
+		refusal = @"the bridge has no vertex descriptors yet: read vertex buffers by vertex_id";
+	} else if (descriptor.rasterSampleCount > 1) {
+		refusal = @"the bridge draws one sample per pixel";
+	}
+	for (NSUInteger i = 1; refusal == nil && i < 8; i++) {
+		if (descriptor.colorAttachments[i].pixelFormat != MTLPixelFormatInvalid) {
+			refusal = [NSString stringWithFormat:@"color attachment %lu: the bridge draws to color "
+			                                     @"attachment 0 only",
+			                                     (unsigned long)i];
+		}
+	}
+	if (refusal != nil) {
+		sweetmtl_set_message(error, what, refusal);
+		return nil;
+	}
+	SweetMTLRenderPipelineHandle *handle = sweetmtl_device_new_render_pipeline(_sweetmtlBridge,
+	    [(SweetMTLFunction *)vertex handle],
+	    fragment != nil ? [(SweetMTLFunction *)fragment handle] : NULL,
+	    (uint32_t)color.pixelFormat);
+	if (handle == NULL) {
+		sweetmtl_set_error(error, what);
+		return nil;
+	}
+	return [[SweetMTLRenderPipelineState alloc] initWithDevice:self
+	                                                    handle:handle
+	                                                     label:descriptor.label];
 }
 
 - (nullable id<MTLCommandQueue>)newCommandQueue

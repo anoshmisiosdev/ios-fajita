@@ -103,12 +103,16 @@ then runs one dispatch through it (below).
 ```
 tools/sweetmtl/
   SweetMTLDriver.h             private header: the handle rename, logging, the stub rule,
-                               SweetMTLObject and the seven object classes, SweetMTLDevice,
+                               SweetMTLObject and the eleven object classes, SweetMTLDevice,
                                SweetMTLAirLibrary
   SweetMTLDevice.m             the class Metal instantiates; the ICD choice; the stub machinery
-  SweetMTLObjects.m            buffer, library, function, pipeline, queue, command buffer, encoder
-  test/scale_and_offset.metal  the kernel the test tool dispatches
-  test/metal_compute.m         the tool: MTLCreateSystemDefaultDevice() + one dispatch, checked
+  SweetMTLObjects.m            buffer, library, function, compute and render pipelines, texture,
+                               queue, command buffer, compute/render/blit encoders
+  test/scale_and_offset.metal  the kernel metal_compute dispatches
+  test/metal_compute.m         MTLCreateSystemDefaultDevice() + one dispatch, checked
+  test/triangle.metal          the vertex + fragment pair metal_render draws
+  test/metal_render.m          one triangle to a texture, read back, checked, written, compared
+  test/test_device.h           the device both tools run on (system default or SWEETMTL_DIRECT)
   Info.plist                   bundle metadata
 ```
 
@@ -126,7 +130,13 @@ The MTLDevice a client sees:
 | `setComputePipelineState:`, `setBuffer:offset:atIndex:`, `dispatchThreads:threadsPerThreadgroup:`, `dispatchThreadgroups:threadsPerThreadgroup:` (threads-per-group × groups), `endEncoding` | `sweetmtl_compute_encoder_*` |
 | `commit`, `waitUntilCompleted` (0 waits indefinitely), `-status`, `-error` | `sweetmtl_command_buffer_*` |
 | `-contents`, `-length`, `-maxTotalThreadsPerThreadgroup`, `-threadExecutionWidth` | the bridge's getters |
-| `-functionType` (always Kernel: the bridge makes compute pipelines only) | this side |
+| `-functionType` (Vertex, Fragment or Kernel, as the translated library says) | `sweetmtl_function_type` |
+| `newTextureWithDescriptor:` (2D, one level, slice and sample; any storage mode and usage) | `sweetmtl_device_new_texture_2d` |
+| `-width`, `-height`, `-pixelFormat`, `-usage`, `-storageMode`, `getBytes:bytesPerRow:fromRegion:mipmapLevel:` (not for private storage, as in Metal) | `sweetmtl_texture_*` |
+| `newRenderPipelineStateWithDescriptor:error:` (vertex + optional fragment, color attachment 0, no blending, no depth, no vertex descriptor) | `sweetmtl_device_new_render_pipeline` |
+| `renderCommandEncoderWithDescriptor:` (color attachment 0 at level 0, any load/store action and clear color) | `sweetmtl_command_buffer_new_render_encoder` |
+| `setRenderPipelineState:`, `setVertexBuffer:`/`setFragmentBuffer:offset:atIndex:`, `setVertexBytes:`/`setFragmentBytes:length:atIndex:`, `setViewport:`, the three `drawPrimitives:` forms, `endEncoding` | `sweetmtl_render_encoder_*` |
+| `blitCommandEncoder`, `copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:`, `endEncoding` | `sweetmtl_blit_encoder_*` |
 | `-device`, `-name`/`-label` on everything | this side |
 
 The bridge makes **shared-storage** buffers only; a caller asking for another
@@ -134,11 +144,17 @@ storage mode gets a shared buffer and one line saying so. A failed bridge call i
 one line (`newBufferWithLength:options:: <the bridge's message>`) and nil/NULL to
 the caller; inside an encoder it lands in `-[MTLCommandBuffer error]` too, which
 is Metal's own channel for it. A buffer, pipeline or function that came from
-somewhere else is refused with a message rather than by a trap.
+somewhere else is refused with a message rather than by a trap. So is a
+descriptor that asks for more than the bridge draws — a second color attachment,
+blending, a write mask, depth or stencil, vertex attributes, multisampling, a
+mipmapped or array texture: the call fails and says which, rather than handing
+back an object that draws something else. (Metal's `vertexDescriptor` is never
+nil — it is an empty descriptor until filled — so "has vertex attributes" means
+an attribute with a format.)
 
 ## What is stubbed, and how
 
-Metal's protocols are roughly 150 selectors wide and the bridge answers 33
+Metal's protocols are several hundred selectors wide and the bridge answers 54
 functions of them. Everything else is answered the same way: the runtime asks
 the class for a missing selector (`+resolveInstanceMethod:`), the driver logs
 
@@ -169,7 +185,7 @@ of those stubs: it answers no/0, not because the GPU said so but because the
 bridge does not report capabilities yet. A client that needs them needs the
 bridge to grow the call.
 
-## The test tool
+## The test tools
 
 `test/metal_compute.m` runs the dispatch the bridge's C test
 (`bridge/tests/compute.c`) runs, but from a normal Metal client instead of the C
@@ -194,8 +210,51 @@ this machine. `xcrun -sdk <sdk> metal`/`metallib` build the kernel next to it
 carries on without the metallib when they are missing (the AIR mode then still
 runs, against `llvm-as` output).
 
+`test/metal_render.m` draws, from a normal Metal client: `newTextureWithDescriptor:`
+(64×64 RGBA8Unorm, private, render target), `newRenderPipelineStateWithDescriptor:`
+over `triangle_vertex`/`triangle_fragment` (`out/triangle.metallib`),
+`renderCommandEncoderWithDescriptor:` clearing to (0.2, 0.2, 0.2, 1), vertex
+buffers plus a `setVertexBytes:` constant, `drawPrimitives:`, then a
+`blitCommandEncoder` copy into a shared buffer. One triangle, red/green/blue at
+its vertices, interpolated across it. It checks what any correct Metal device
+draws (clear corners, each vertex's color dominant near it, ≈85/85/85 at the
+centroid), prints a 16×16 sketch, and writes `<prefix>.rgba` (raw texels) and
+`<prefix>.png`.
+
+Because a Mac has Apple's own Metal driver, the tool makes its own reference:
+run it once without `SWEETMTL_DIRECT` (Apple's driver), then on the driver with
+`SWEETMTL_REFERENCE` pointing at that run's `.rgba`, and it compares every texel
+(failing past `SWEETMTL_TOLERANCE`, default 1):
+
+```sh
+./out/metal_render out/triangle.metallib out/render-apple
+SWEETMTL_DIRECT=out/SweetMTLDriver.bundle SWEETMTL_ICD=<libMoltenVK.dylib> \
+SWEETMTL_REFERENCE=out/render-apple.rgba \
+./out/metal_render out/triangle.metallib out/render-sweetmtl
+```
+
+On the phone there is no Apple driver to ask, so the reference is a Mac run's
+`.rgba` copied over; the built-in checks hold either way.
+
 ## Where it was tested
 
+- **Render, on this Mac over MoltenVK: bit-identical to Apple's own Metal**
+  (2026-10-22, the same Mac16,8 / M4 Pro / macOS 27.0 / MoltenVK 1.4.2).
+  `./out/metal_render out/triangle.metallib out/render-apple` on Apple's driver
+  (`device: Apple M4 Pro (AGXG16SDevice)`), then the same client with
+  `SWEETMTL_DIRECT` and `SWEETMTL_REFERENCE=out/render-apple.rgba` on
+  `device: Apple M4 Pro (SweetMTLDevice)`: `render pipeline: RGBA8Unorm, no
+  blending`, `texture: 64x64, pixel format 70, private`, `status: Completed`,
+  the same sketch, `near the top (red) vertex: (32, 11) = 230 10 15 255`,
+  `centroid: (32, 40) = 85 82 87 255`, and
+  `against out/render-apple.rgba: 0 of 4096 texels differ, by 0 at most`,
+  `sweetmtl: metal_render through Metal.framework: OK`, exit 0. The two `.rgba`
+  files have the same SHA-256 (`b60fa225…427e0f`). That is the whole chain —
+  Metal client → SweetMTLDevice → bridge → metal2vulkan (AIR → SPIR-V, Metal
+  objects → Vulkan) → MoltenVK → Apple's GPU — giving back the picture Apple's
+  driver draws from the same metallib. It is also the limit of what it proves:
+  MoltenVK ends on the same GPU and Metal compiler, so it checks the translation
+  and the object model, not a different rasterizer; Turnip is the test of that.
 - **On this Mac, over MoltenVK, it passes end to end** (2026-10-22: Mac16,8,
   Apple M4 Pro, macOS 27.0 26A428, Homebrew MoltenVK 1.4.2, no loader).
   `./build.sh --host`, then:
@@ -282,7 +341,7 @@ The translation and the Vulkan work are not written here:
   BO/submit interface the kernel already exposes).
 - **The CA display path** (IOSurface ↔ Turnip image, `AppleCLCD` present) is the
   same work `tools/sweetgl`'s `sweet_drm.c` already does for GLES, and the driver
-  does not do it yet: this milestone is a compute dispatch a client drives, not a
+  does not do it yet: a client can dispatch and render offscreen, but there is no
   layer CoreAnimation can present with.
 
 ## The Vulkan bridge — `bridge/`
@@ -295,25 +354,35 @@ crosses the boundary, only opaque handles.
 ```
 tools/sweetmtl/bridge/
   Cargo.toml                 ONE metal2vulkan revision, twice: translator + runtime
-  src/{lib,ffi,handle,objects,backend}.rs
+  src/{lib,ffi,handle,objects,backend,render}.rs
   include/sweetmtl_bridge.h  generated from src/ by cbindgen (`generate-header.sh`)
   tests/compute.c            the C test: the runtime's compute_dispatch example over the ABI
-  tests/run.sh               assembles the fixture and runs it against a bare Mesa ICD
+  tests/render.c             the C test: the runtime's render_to_texture example over the ABI
+  tests/run.sh               assembles the fixture and runs both against a bare ICD
 .github/workflows/sweetmtl-bridge.yml
                              `ios` job: builds for aarch64-apple-ios, checks the header,
                              uploads `libsweetmtl_bridge.a`, `.dylib` and the header
                              `driver` job: downloads that artifact and builds
-                             SweetMTLDriver.bundle + metal_compute from it (build.sh),
-                             uploading all three
-                             `lavapipe` job: runs the C test on Linux
+                             SweetMTLDriver.bundle, metal_compute and metal_render from
+                             it (build.sh), uploading them with the metallibs
+                             `lavapipe` job: runs both C tests on Linux
 ```
 
-The ABI (33 functions, 8 handle types) is one milestone of `MTLDevice`: open a
-device on a named ICD, read its name, allocate a shared-storage buffer, make a
-library from AIR, get a function, make a compute pipeline, make a command
-queue/command buffer/compute encoder, set the pipeline, set a buffer at an
-index, dispatch a grid of threads in threadgroups, end, commit, wait for
-completion, query the status, release everything. Failures come back as NULL/0
+The ABI (54 functions, 12 handle types) is two milestones of `MTLDevice`. The
+first (`lib.rs`, 33 functions): open a device on a named ICD, read its name,
+allocate a shared-storage buffer, make a library from AIR, get a function, make
+a compute pipeline, make a command queue/command buffer/compute encoder, set the
+pipeline, set a buffer at an index, dispatch a grid of threads in threadgroups,
+end, commit, wait for completion, query the status, release everything. The
+second (`render.rs`, 20 functions, plus `sweetmtl_function_type`): a 2D texture
+in any storage mode (its size, format and `getBytes`), a render pipeline of a
+vertex and an optional fragment function over one color attachment, a render
+encoder for a pass of one color attachment (pipeline, vertex/fragment buffers
+and bytes, viewport, `drawPrimitives`), and a blit encoder's texture-to-buffer
+copy — the runtime's `render_to_texture` example. Every Metal enum or option set
+crosses as Metal's own raw value (`MTLPixelFormat`, `MTLTextureUsage`,
+`MTLStorageMode`, `MTLLoadAction`, `MTLStoreAction`, `MTLPrimitiveType`), checked
+by the runtime's own `from_raw`/`TryFrom`, never cast. Failures come back as NULL/0
 with `sweetmtl_last_error()` set; a Rust panic never crosses the boundary
 (`catch_unwind`).
 
@@ -386,7 +455,11 @@ name, `bridge/tests/compute.c` and cbindgen's header are exactly as they were.
   `device: Apple M4 Pro` … `status: Completed` …
   `output[0..4] = 0 3 6 9, ..., output[999] = 2997: as expected` …
   `sweetmtl-bridge: compute_dispatch through the C ABI: OK`, exit 0, with no
-  bridge change.
+  bridge change. Since the render milestone `run.sh` runs `tests/render.c` after
+  it, which on MoltenVK prints `render pipeline: colored_vertex +
+  colored_fragment, RGBA8Unorm`, `status: Completed`, the 8×8 map (`####....` ×4,
+  `........` ×4), `every texel as expected: the top-left quarter drawn, the rest
+  cleared` and `sweetmtl-bridge: render_to_texture through the C ABI: OK`, exit 0.
 - **Over Homebrew Lavapipe on this Mac it stops at the last step**, and the
   reason is the platform, not the bridge: `sweetmtl_command_buffer_wait_until_completed` takes SIGSEGV
   inside `libLLVM.dylib`'s `DAGTypeLegalizer::PromoteIntRes_Select` — Lavapipe's

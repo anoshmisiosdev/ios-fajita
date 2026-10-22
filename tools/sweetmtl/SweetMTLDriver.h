@@ -5,8 +5,8 @@
  *
  * This is not a public header. Metal knows the class by name (the kernel's MetalPluginClassName)
  * and declares the MTLDevice protocols itself; the only reader outside the driver is its test
- * tool, test/metal_compute.m, which needs the driver's private door for AIR bitcode
- * (SweetMTLAirLibrary).
+ * tools, test/metal_compute.m and test/metal_render.m; metal_compute needs the driver's private
+ * door for AIR bitcode (SweetMTLAirLibrary).
  */
 #ifndef SWEETMTL_DRIVER_H
 #define SWEETMTL_DRIVER_H
@@ -33,6 +33,10 @@
 #define SweetMTLCommandQueue    SweetMTLCommandQueueHandle
 #define SweetMTLCommandBuffer   SweetMTLCommandBufferHandle
 #define SweetMTLComputeEncoder  SweetMTLComputeEncoderHandle
+#define SweetMTLTexture         SweetMTLTextureHandle
+#define SweetMTLRenderPipeline  SweetMTLRenderPipelineHandle
+#define SweetMTLRenderEncoder   SweetMTLRenderEncoderHandle
+#define SweetMTLBlitEncoder     SweetMTLBlitEncoderHandle
 #include "sweetmtl_bridge.h"
 #undef SweetMTLDevice
 #undef SweetMTLBuffer
@@ -42,6 +46,10 @@
 #undef SweetMTLCommandQueue
 #undef SweetMTLCommandBuffer
 #undef SweetMTLComputeEncoder
+#undef SweetMTLTexture
+#undef SweetMTLRenderPipeline
+#undef SweetMTLRenderEncoder
+#undef SweetMTLBlitEncoder
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -133,6 +141,25 @@ BOOL sweetmtl_stub_selector(Class cls, SEL sel, BOOL class_method);
 @property (nonatomic, readonly) SweetMTLComputePipelineHandle *handle;
 @end
 
+/* MTLTexture: a 2D texture of one level (`newTextureWithDescriptor:`), in the storage mode and
+ * usage its descriptor asked for. */
+@interface SweetMTLTexture : SweetMTLObject <MTLTexture>
+- (instancetype)initWithDevice:(SweetMTLDevice *)device
+                        handle:(SweetMTLTextureHandle *)handle
+                         usage:(MTLTextureUsage)usage
+                   storageMode:(MTLStorageMode)storageMode;
+@property (nonatomic, readonly) SweetMTLTextureHandle *handle;
+@end
+
+/* MTLRenderPipelineState: a vertex function, an optional fragment function, one color attachment,
+ * no blending. */
+@interface SweetMTLRenderPipelineState : SweetMTLObject <MTLRenderPipelineState>
+- (instancetype)initWithDevice:(SweetMTLDevice *)device
+                        handle:(SweetMTLRenderPipelineHandle *)handle
+                         label:(nullable NSString *)label;
+@property (nonatomic, readonly) SweetMTLRenderPipelineHandle *handle;
+@end
+
 /* MTLCommandQueue, and the command buffers it makes. */
 @interface SweetMTLCommandQueue : SweetMTLObject <MTLCommandQueue>
 - (instancetype)initWithDevice:(SweetMTLDevice *)device
@@ -140,7 +167,8 @@ BOOL sweetmtl_stub_selector(Class cls, SEL sel, BOOL class_method);
 @property (nonatomic, readonly) SweetMTLCommandQueueHandle *handle;
 @end
 
-/* MTLCommandBuffer: `computeCommandEncoder`, `commit`, `waitUntilCompleted`, `status`. */
+/* MTLCommandBuffer: `computeCommandEncoder`, `renderCommandEncoderWithDescriptor:`,
+ * `blitCommandEncoder`, `commit`, `waitUntilCompleted`, `status`. */
 @interface SweetMTLCommandBuffer : SweetMTLObject <MTLCommandBuffer>
 - (instancetype)initWithDevice:(SweetMTLDevice *)device
                         handle:(SweetMTLCommandBufferHandle *)handle;
@@ -156,6 +184,22 @@ BOOL sweetmtl_stub_selector(Class cls, SEL sel, BOOL class_method);
 - (instancetype)initWithCommandBuffer:(SweetMTLCommandBuffer *)command_buffer
                                handle:(SweetMTLComputeEncoderHandle *)handle;
 @property (nonatomic, readonly) SweetMTLComputeEncoderHandle *handle;
+@end
+
+/* MTLRenderCommandEncoder of a pass with one color attachment: pipeline, vertex and fragment
+ * buffers and bytes, viewport, drawPrimitives, end. */
+@interface SweetMTLRenderCommandEncoder : SweetMTLObject <MTLRenderCommandEncoder>
+- (instancetype)initWithCommandBuffer:(SweetMTLCommandBuffer *)command_buffer
+                               handle:(SweetMTLRenderEncoderHandle *)handle;
+@property (nonatomic, readonly) SweetMTLRenderEncoderHandle *handle;
+@end
+
+/* MTLBlitCommandEncoder: the copy of a texture into a buffer, which is how a client reads back a
+ * private render target. */
+@interface SweetMTLBlitCommandEncoder : SweetMTLObject <MTLBlitCommandEncoder>
+- (instancetype)initWithCommandBuffer:(SweetMTLCommandBuffer *)command_buffer
+                               handle:(SweetMTLBlitEncoderHandle *)handle;
+@property (nonatomic, readonly) SweetMTLBlitEncoderHandle *handle;
 @end
 
 /*

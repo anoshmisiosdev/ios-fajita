@@ -252,6 +252,57 @@
   `MVK_CONFIG_LOG_LEVEL=2` printed no MoltenVK error lines. So the Lavapipe
   SIGSEGV above stays Homebrew LLVM 22's, and the driver's whole path —
   metallib door, pipeline, dispatch, read-back — is now seen on macOS.
+- **The driver renders, bit-identical to Apple's Metal (2026-10-22, observation):**
+  the bridge's second milestone, `bridge/src/render.rs` (20 functions) plus
+  `sweetmtl_function_type`: 54 functions, 12 handles (new `SweetMTLTexture`,
+  `SweetMTLRenderPipeline`, `SweetMTLRenderEncoder`, `SweetMTLBlitEncoder`). 2D
+  textures in any storage mode (`getBytes` too), render pipelines of a vertex
+  and an optional fragment function over color attachment 0, a render encoder
+  for a one-attachment pass (pipeline, vertex/fragment buffers and bytes,
+  viewport, `drawPrimitives`), and a blit encoder's texture-to-buffer copy —
+  metal2vulkan's own `render_to_texture` example, function by function. Metal
+  enums cross as raw values checked by the runtime's `from_raw`/`TryFrom`. The
+  driver grew `SweetMTLTexture`, `SweetMTLRenderPipelineState`,
+  `SweetMTLRenderCommandEncoder`, `SweetMTLBlitCommandEncoder`,
+  `newTextureWithDescriptor:`, `newRenderPipelineStateWithDescriptor:error:`,
+  `renderCommandEncoderWithDescriptor:`, `blitCommandEncoder`, and a real
+  `-functionType`; descriptors asking for more (blending, depth, a second
+  attachment, vertex attributes, MSAA, mipmaps) are refused by name. One thing
+  found on the way: Apple's `MTLRenderPipelineDescriptor.vertexDescriptor` is
+  never nil (an empty descriptor by default), so the first refusal check
+  rejected every pipeline; it now looks for an attribute with a format.
+  Tested on the same Mac16,8 / M4 Pro / macOS 27.0 / MoltenVK 1.4.2:
+  (1) `tests/run.sh` now builds and runs `tests/render.c` after `compute.c`;
+  on MoltenVK: `render pipeline: colored_vertex + colored_fragment, RGBA8Unorm`,
+  `status: Completed`, the 8×8 map `####....` ×4 / `........` ×4, `every texel
+  as expected: the top-left quarter drawn, the rest cleared`,
+  `sweetmtl-bridge: render_to_texture through the C ABI: OK`, exit 0.
+  (2) New client `test/metal_render.m` + `test/triangle.metal`: a 64×64 private
+  RGBA8Unorm target cleared to 0.2 grey, one triangle red/green/blue at its
+  vertices with a `setVertexBytes:` scale of 0.8, blit to a shared buffer,
+  written as `.rgba` + `.png`. Run on **Apple's own driver** (`device: Apple M4
+  Pro (AGXG16SDevice)`) for the reference, then on `SweetMTLDevice` over MoltenVK
+  with `SWEETMTL_REFERENCE=out/render-apple.rgba`: both print
+  `near the top (red) vertex: (32, 11) = 230 10 15 255`,
+  `near the bottom left (green) vertex: (12, 55) = 10 219 25 255`,
+  `near the bottom right (blue) vertex: (51, 55) = 10 25 219 255`,
+  `centroid: (32, 40) = 85 82 87 255`, and the driver run ends
+  `against out/render-apple.rgba: 0 of 4096 texels differ, by 0 at most`,
+  `sweetmtl: metal_render through Metal.framework: OK`, exit 0; `cmp` says the
+  two `.rgba` files are identical (SHA-256 b60fa225aa8748c4bd1d8dc0ffdf2e48
+  92da902b9c3879cf6fd5d52909427e0f). metal2vulkan's notes on that run:
+  `[metal2vulkan-unmeasured-driver]`,
+  `[metal2vulkan-degrade-moltenvk-argument-buffers-unread]`,
+  `[metal2vulkan-degrade-beyond-measured-deviation]` — none fatal. What it does
+  *not* prove: MoltenVK ends on the same AGX GPU and Apple's Metal compiler, so
+  the identity checks the translation and object model, not a second
+  rasterizer; Turnip is that test. Also built for iOS: `cargo build --release
+  --target aarch64-apple-ios` (54 `_sweetmtl_` symbols in the `.a`) and
+  `sh build.sh` → `SweetMTLDriver` `Mach-O 64-bit bundle arm64`, `metal_render`
+  `Mach-O 64-bit executable arm64`, no warnings. `metal_compute` still passes
+  (its device setup moved to `test/test_device.h`, shared with metal_render).
+  Not done: depth, blending, samplers/texture reads, vertex descriptors, and any
+  on-screen path (CAMetalLayer / IOSurface present).
 - **Pipeline status (2026-10-22, observation):** the kernel hook, the bridge
   (`tools/sweetmtl/bridge/`) and `tools/sweetmtl/out/SweetMTLDriver.bundle`
   (driver + bridge + tool, iphoneos arm64) are built. There is no Turnip /

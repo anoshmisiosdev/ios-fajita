@@ -3,8 +3,8 @@
 //!
 //! The bridge is the layer between `Metal.framework`'s driver interface and the translator: the
 //! Objective-C device classes call these functions, and each one drives the runtime's Metal-shaped
-//! objects (buffers, libraries, functions, compute pipelines, command queues and buffers, compute
-//! encoders) on the Vulkan device the bridge opened on a bare Mesa ICD.
+//! objects (buffers, textures, libraries, functions, compute and render pipelines, command queues
+//! and buffers, compute, render and blit encoders) on the Vulkan device the bridge opened on a bare Mesa ICD.
 //!
 //! # The shape of the ABI
 //!
@@ -20,24 +20,29 @@
 //!   and releases with the matching `sweetmtl_*_release`. **Release every object before the device
 //!   it came from**: the runtime's objects are made from the `VkDevice` the device handle owns.
 //!
-//! # The first milestone
+//! # The milestones
 //!
-//! Compute only: init, buffers, libraries and functions, compute pipelines, command queues and
-//! command buffers, and compute encoders. Render, textures, samplers, argument buffers, events and
-//! the rest of Metal come later, and so do the extension features of the enable vocabulary (see
-//! [`backend`]'s module docs and the crate README).
+//! First, compute: init, buffers, libraries and functions, compute pipelines, command queues and
+//! command buffers, and compute encoders. Second ([`render`]), a render pass to a texture read
+//! back: 2D textures, render pipelines of a vertex and a fragment function, render encoders over
+//! one color attachment, and the blit of a texture into a buffer. Depth, blending, samplers,
+//! argument buffers, events and the rest of Metal come later, and so do the extension features of
+//! the enable vocabulary (see [`backend`]'s module docs and the crate README).
 
 // The handle types are re-exported so cbindgen sees them at the crate root and writes a definition
 // for each; the state they point at stays private.
 pub use handle::{
-    SweetMTLBuffer, SweetMTLCommandBuffer, SweetMTLCommandQueue, SweetMTLComputeEncoder,
-    SweetMTLComputePipeline, SweetMTLDevice, SweetMTLFunction, SweetMTLLibrary,
+    SweetMTLBlitEncoder, SweetMTLBuffer, SweetMTLCommandBuffer, SweetMTLCommandQueue,
+    SweetMTLComputeEncoder, SweetMTLComputePipeline, SweetMTLDevice, SweetMTLFunction,
+    SweetMTLLibrary, SweetMTLRenderEncoder, SweetMTLRenderPipeline, SweetMTLTexture,
 };
+pub use render::*;
 
 mod backend;
 mod ffi;
 mod handle;
 mod objects;
+mod render;
 
 use ffi::{bytes_arg, guard, last_error_ptr, opt_str_arg, set_last_error, str_arg};
 use metal2vulkan_runtime::{CommandBufferStatus, PipelineOptions, ResourceOptions};
@@ -406,6 +411,30 @@ pub unsafe extern "C" fn sweetmtl_library_new_function(
                 set_last_error(format!("new_function_with_name({name:?}) failed: {error}"));
                 ptr::null_mut()
             }
+        }
+    })
+}
+
+/// `MTLFunction.functionType`, as Metal's raw value: 1 vertex, 2 fragment, 3 kernel. Returns 0
+/// on failure (a NULL handle, a function whose type the translator cannot read), with
+/// [`sweetmtl_last_error`] saying why.
+///
+/// # Safety
+///
+/// `function` is a live function handle.
+#[no_mangle]
+pub unsafe extern "C" fn sweetmtl_function_type(function: *mut SweetMTLFunction) -> u32 {
+    guard(0, || match unsafe { SweetMTLFunction::state(function) } {
+        Some(state) => match state.function.function_type() {
+            Ok(kind) => kind.as_raw(),
+            Err(error) => {
+                set_last_error(format!("function_type failed: {error}"));
+                0
+            }
+        },
+        None => {
+            set_last_error("sweetmtl_function_type: function is NULL");
+            0
         }
     })
 }

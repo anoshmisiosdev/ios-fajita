@@ -59,6 +59,34 @@ typedef struct {
     void *_state;
 } SweetMTLComputeEncoder;
 
+// `MTLTexture`, 2D.
+typedef struct {
+    // This bridge's own state; C never reads or writes it.
+    void *_state;
+} SweetMTLTexture;
+
+// `MTLRenderPipelineState`: a vertex function, an optional fragment function and one color
+// attachment's pixel format.
+typedef struct {
+    // This bridge's own state; C never reads or writes it.
+    void *_state;
+} SweetMTLRenderPipeline;
+
+// `MTLRenderCommandEncoder` of a pass with one color attachment.
+// [`sweetmtl_render_encoder_end`](crate::sweetmtl_render_encoder_end) consumes the encoder; the
+// handle is freed separately.
+typedef struct {
+    // This bridge's own state; C never reads or writes it.
+    void *_state;
+} SweetMTLRenderEncoder;
+
+// `MTLBlitCommandEncoder`. [`sweetmtl_blit_encoder_end`](crate::sweetmtl_blit_encoder_end)
+// consumes the encoder; the handle is freed separately.
+typedef struct {
+    // This bridge's own state; C never reads or writes it.
+    void *_state;
+} SweetMTLBlitEncoder;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -205,6 +233,15 @@ void sweetmtl_library_release(SweetMTLLibrary *library);
 //
 // `library` is a live library handle, and `name` is a NUL-terminated C string.
 SweetMTLFunction *sweetmtl_library_new_function(SweetMTLLibrary *library, const char *name);
+
+// `MTLFunction.functionType`, as Metal's raw value: 1 vertex, 2 fragment, 3 kernel. Returns 0
+// on failure (a NULL handle, a function whose type the translator cannot read), with
+// [`sweetmtl_last_error`] saying why.
+//
+// # Safety
+//
+// `function` is a live function handle.
+uint32_t sweetmtl_function_type(SweetMTLFunction *function);
 
 // Releases a function. Does nothing for NULL.
 //
@@ -389,6 +426,260 @@ const char *sweetmtl_command_buffer_status_name(int status);
 // `CommandBuffer::status` is also the bridge's way to tell a completed command buffer from a
 // failed one: nonzero where the status is [`CommandBufferStatus::Completed`]. For the C test.
 int sweetmtl_command_buffer_completed(SweetMTLCommandBuffer *command_buffer);
+
+// `newTextureWithDescriptor:` for `texture2DDescriptorWithPixelFormat:width:height:mipmapped:NO`:
+// a 2D texture of one level, `usage` and `storage_mode` Metal's raw `MTLTextureUsage` and
+// `MTLStorageMode` (0 shared, 1 managed, 2 private). A render target is usually private and read
+// back with a blit ([`sweetmtl_blit_encoder_copy_texture_to_buffer`]); a shared one can be read
+// with [`sweetmtl_texture_get_bytes`].
+//
+// Returns NULL on failure, with [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why.
+//
+// # Safety
+//
+// `device` is a live device handle.
+SweetMTLTexture *sweetmtl_device_new_texture_2d(SweetMTLDevice *device,
+                                                uint32_t pixel_format_raw,
+                                                uint64_t width,
+                                                uint64_t height,
+                                                uint32_t usage,
+                                                uint32_t storage_mode);
+
+// `MTLTexture.width`.
+//
+// # Safety
+//
+// `texture` is a live texture handle.
+uint64_t sweetmtl_texture_width(SweetMTLTexture *texture);
+
+// `MTLTexture.height`.
+//
+// # Safety
+//
+// `texture` is a live texture handle.
+uint64_t sweetmtl_texture_height(SweetMTLTexture *texture);
+
+// `MTLTexture.pixelFormat`, as Metal's raw value.
+//
+// # Safety
+//
+// `texture` is a live texture handle.
+uint32_t sweetmtl_texture_pixel_format(SweetMTLTexture *texture);
+
+// `getBytes:bytesPerRow:fromRegion:mipmapLevel:`: the texels of a region of level `level` into
+// `bytes` (`length` of them writable), rows `bytes_per_row` apart. Refused for a private texture,
+// as Metal refuses it.
+//
+// Returns 0 on success and nonzero on failure, with
+// [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why.
+//
+// # Safety
+//
+// `texture` is a live texture handle the GPU is not writing, and `bytes` names `length` writable
+// bytes.
+int sweetmtl_texture_get_bytes(SweetMTLTexture *texture,
+                               void *bytes,
+                               uint64_t length,
+                               uint64_t bytes_per_row,
+                               uint64_t x,
+                               uint64_t y,
+                               uint64_t width,
+                               uint64_t height,
+                               uint64_t level);
+
+// Releases a texture. Does nothing for NULL.
+//
+// # Safety
+//
+// `texture` is a live texture handle, released once, and no command buffer still uses it.
+void sweetmtl_texture_release(SweetMTLTexture *texture);
+
+// `newRenderPipelineStateWithDescriptor:error:` for a descriptor of a vertex function, a
+// fragment function (NULL for none) and color attachment 0's pixel format (Metal's raw value;
+// 0, `MTLPixelFormatInvalid`, for no color attachment). Blending is off, as a fresh
+// `MTLRenderPipelineColorAttachmentDescriptor` has it.
+//
+// Returns NULL on failure, with [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why.
+//
+// # Safety
+//
+// `device` is a live device handle, `vertex` a live function of it, and `fragment` NULL or one.
+SweetMTLRenderPipeline *sweetmtl_device_new_render_pipeline(SweetMTLDevice *device,
+                                                            SweetMTLFunction *vertex,
+                                                            SweetMTLFunction *fragment,
+                                                            uint32_t color_pixel_format);
+
+// Releases a render pipeline. Does nothing for NULL.
+//
+// # Safety
+//
+// `pipeline` is a live render pipeline handle, released once, and no command buffer still uses
+// it.
+void sweetmtl_render_pipeline_release(SweetMTLRenderPipeline *pipeline);
+
+// `renderCommandEncoderWithDescriptor:` for a pass of one color attachment: `texture` at
+// attachment 0 with `load_action` and `store_action` (Metal's raw `MTLLoadAction` /
+// `MTLStoreAction`) and, for a clear, the clear color `red`, `green`, `blue`, `alpha`.
+//
+// Returns NULL on failure, with [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why
+// (another encoder open, a texture that is not a render target).
+//
+// # Safety
+//
+// `command_buffer` is a live command buffer handle and `texture` a live texture of its device.
+SweetMTLRenderEncoder *sweetmtl_command_buffer_new_render_encoder(SweetMTLCommandBuffer *command_buffer,
+                                                                  SweetMTLTexture *texture,
+                                                                  uint32_t load_action,
+                                                                  uint32_t store_action,
+                                                                  double red,
+                                                                  double green,
+                                                                  double blue,
+                                                                  double alpha);
+
+// `setRenderPipelineState:`.
+//
+// Returns 0 on success and nonzero on failure, with
+// [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why.
+//
+// # Safety
+//
+// `encoder` is a live, not yet ended render encoder handle and `pipeline` a live render pipeline
+// of its device.
+int sweetmtl_render_encoder_set_pipeline(SweetMTLRenderEncoder *encoder,
+                                         SweetMTLRenderPipeline *pipeline);
+
+// `setVertexBuffer:offset:atIndex:` (`fragment` 0) or `setFragmentBuffer:offset:atIndex:`
+// (`fragment` nonzero).
+//
+// Returns 0 on success and nonzero on failure, with
+// [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why.
+//
+// # Safety
+//
+// `encoder` is a live, not yet ended render encoder handle, and `buffer` a live buffer of its
+// device (kept alive until the command buffer completes).
+int sweetmtl_render_encoder_set_buffer(SweetMTLRenderEncoder *encoder,
+                                       int fragment,
+                                       SweetMTLBuffer *buffer,
+                                       uint64_t offset,
+                                       uint32_t index);
+
+// `setVertexBytes:length:atIndex:` (`fragment` 0) or `setFragmentBytes:length:atIndex:`
+// (`fragment` nonzero): the bytes are copied at the call.
+//
+// Returns 0 on success and nonzero on failure, with
+// [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why.
+//
+// # Safety
+//
+// `encoder` is a live, not yet ended render encoder handle, and `bytes` names `length` readable
+// bytes.
+int sweetmtl_render_encoder_set_bytes(SweetMTLRenderEncoder *encoder,
+                                      int fragment,
+                                      const uint8_t *bytes,
+                                      uint64_t length,
+                                      uint32_t index);
+
+// `setViewport:`. A pass starts with the viewport of its attachment's whole size, as Metal's
+// does, so a client that draws to all of it need not call this.
+//
+// Returns 0 on success and nonzero on failure, with
+// [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why.
+//
+// # Safety
+//
+// `encoder` is a live, not yet ended render encoder handle.
+int sweetmtl_render_encoder_set_viewport(SweetMTLRenderEncoder *encoder,
+                                         double origin_x,
+                                         double origin_y,
+                                         double width,
+                                         double height,
+                                         double znear,
+                                         double zfar);
+
+// `drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:`, `primitive_type` Metal's
+// raw `MTLPrimitiveType` (3 triangle, 4 triangle strip).
+//
+// Returns 0 on success and nonzero on failure, with
+// [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why.
+//
+// # Safety
+//
+// `encoder` is a live, not yet ended render encoder handle with a pipeline set.
+int sweetmtl_render_encoder_draw_primitives(SweetMTLRenderEncoder *encoder,
+                                            uint32_t primitive_type,
+                                            uint32_t vertex_start,
+                                            uint32_t vertex_count,
+                                            uint32_t instance_count,
+                                            uint32_t base_instance);
+
+// `endEncoding` of a render encoder; the handle then only has to be freed.
+//
+// Returns 0 on success and nonzero on failure, with
+// [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why.
+//
+// # Safety
+//
+// `encoder` is a live render encoder handle not yet ended.
+int sweetmtl_render_encoder_end(SweetMTLRenderEncoder *encoder);
+
+// Frees a render encoder handle. Does nothing for NULL. Only after
+// [`sweetmtl_render_encoder_end`].
+//
+// # Safety
+//
+// `encoder` is a live render encoder handle, released once.
+void sweetmtl_render_encoder_release(SweetMTLRenderEncoder *encoder);
+
+// `blitCommandEncoder`: the encoder of a command buffer's copies.
+//
+// Returns NULL on failure, with [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why.
+//
+// # Safety
+//
+// `command_buffer` is a live command buffer handle.
+SweetMTLBlitEncoder *sweetmtl_command_buffer_new_blit_encoder(SweetMTLCommandBuffer *command_buffer);
+
+// `copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:
+// destinationBytesPerRow:destinationBytesPerImage:`: a 2D region of `texture` into `buffer`,
+// ordered after the command buffer's earlier passes.
+//
+// Returns 0 on success and nonzero on failure, with
+// [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why.
+//
+// # Safety
+//
+// `encoder` is a live, not yet ended blit encoder handle, and `texture` and `buffer` live objects
+// of its device.
+int sweetmtl_blit_encoder_copy_texture_to_buffer(SweetMTLBlitEncoder *encoder,
+                                                 SweetMTLTexture *texture,
+                                                 uint64_t slice,
+                                                 uint64_t level,
+                                                 uint64_t x,
+                                                 uint64_t y,
+                                                 uint64_t width,
+                                                 uint64_t height,
+                                                 SweetMTLBuffer *buffer,
+                                                 uint64_t offset,
+                                                 uint64_t bytes_per_row,
+                                                 uint64_t bytes_per_image);
+
+// `endEncoding` of a blit encoder; the handle then only has to be freed.
+//
+// Returns 0 on success and nonzero on failure, with
+// [`sweetmtl_last_error`](crate::sweetmtl_last_error) saying why.
+//
+// # Safety
+//
+// `encoder` is a live blit encoder handle not yet ended.
+int sweetmtl_blit_encoder_end(SweetMTLBlitEncoder *encoder);
+
+// Frees a blit encoder handle. Does nothing for NULL. Only after [`sweetmtl_blit_encoder_end`].
+//
+// # Safety
+//
+// `encoder` is a live blit encoder handle, released once.
+void sweetmtl_blit_encoder_release(SweetMTLBlitEncoder *encoder);
 
 #ifdef __cplusplus
 }  // extern "C"

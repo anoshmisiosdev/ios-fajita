@@ -4,9 +4,13 @@
 #   1. `llvm-as` assembles the translator's owned fixture
 #      (`crates/metal2vulkan-validation/fixtures/public/examples/runtime_examples.ll`) into AIR
 #      bitcode, as `examples/common/mod.rs` does for the Rust example;
-#   2. `cc` links tests/compute.c against the bridge (the cdylib in target/debug);
-#   3. the test opens the bare Mesa ICD by path and runs the same `scale_and_offset` dispatch the
-#      runtime's own `compute_dispatch` example runs, checking output[i] == 3i.
+#   2. `cc` links tests/compute.c and tests/render.c against the bridge (the cdylib in
+#      target/debug);
+#   3. compute opens the bare Mesa ICD by path and runs the same `scale_and_offset` dispatch the
+#      runtime's own `compute_dispatch` example runs, checking output[i] == 3i;
+#   4. render does what the runtime's `render_to_texture` example does - `colored_vertex` and
+#      `colored_fragment` drawing two triangles into a cleared 8x8 texture, blitted to a buffer -
+#      and checks every texel.
 #
 #     tests/run.sh [<icd-path>]
 #
@@ -124,11 +128,14 @@ echo "fixture: $FIXTURE"
 (cd "$H" && cargo build --quiet)
 LIBDIR=${CARGO_TARGET_DIR:-$H/target}/debug
 CC=${CC:-cc}
-$CC -std=c11 -O2 -Wall -Wextra -I "$H/include" "$H/tests/compute.c" \
-    -L "$LIBDIR" -lsweetmtl_bridge -Wl,-rpath,"$LIBDIR" -o "$H/tests/compute"
+for test in compute render; do
+    $CC -std=c11 -O2 -Wall -Wextra -I "$H/include" "$H/tests/$test.c" \
+        -L "$LIBDIR" -lsweetmtl_bridge -Wl,-rpath,"$LIBDIR" -o "$H/tests/$test"
+done
 
 TMP=${TMPDIR:-/tmp}/sweetmtl-bridge-$$
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 "$LLVM_AS" "$FIXTURE" -o "$TMP/runtime_examples.air"
 "$H/tests/compute" "$TMP/runtime_examples.air" "$ICD"
+"$H/tests/render" "$TMP/runtime_examples.air" "$ICD"

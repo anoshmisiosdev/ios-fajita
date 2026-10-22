@@ -101,14 +101,14 @@ jobs:
 
       - name: Stage
         run: |
-          # The metallib is built only where the runner's Xcode has the Metal compiler (Xcode 16.3+
+          # The metallibs are built only where the runner's Xcode has the Metal compiler (Xcode 16.3+
           # needs `xcodebuild -downloadComponent MetalToolchain`); build.sh says so and carries on.
           cd out
-          for f in metal_compute scale_and_offset.metallib; do
+          for f in metal_compute metal_render scale_and_offset.metallib triangle.metallib; do
             [ -f "$f" ] && shasum -a 256 "$f" >> SHA256SUMS
           done
           shasum -a 256 SweetMTLDriver.bundle/Contents/MacOS/SweetMTLDriver >> SHA256SUMS
-          file SweetMTLDriver.bundle/Contents/MacOS/SweetMTLDriver metal_compute
+          file SweetMTLDriver.bundle/Contents/MacOS/SweetMTLDriver metal_compute metal_render
           ls -la
           cat SHA256SUMS
 

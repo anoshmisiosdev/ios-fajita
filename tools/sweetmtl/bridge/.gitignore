@@ -2,7 +2,8 @@
 /target/
 # a second tree for the Linux test runs (tests/run.sh honours CARGO_TARGET_DIR)
 /target-linux/
-# tests/run.sh's compiled test binary
+# tests/run.sh's compiled test binaries
 /tests/compute
+/tests/render
 # the CI job's staged artifacts
 /out/

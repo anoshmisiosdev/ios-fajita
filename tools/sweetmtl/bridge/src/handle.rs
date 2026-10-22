@@ -11,8 +11,9 @@
 
 use crate::backend::DeviceState;
 use crate::objects::{
-    BufferState, CommandBufferState, CommandQueueState, ComputeEncoderState, ComputePipelineState,
-    FunctionState, LibraryState,
+    BlitEncoderState, BufferState, CommandBufferState, CommandQueueState, ComputeEncoderState,
+    ComputePipelineState, FunctionState, LibraryState, RenderEncoderState,
+    RenderPipelineStateState, TextureState,
 };
 use std::ffi::c_void;
 
@@ -123,6 +124,38 @@ pub struct SweetMTLComputeEncoder {
     _state: *mut c_void,
 }
 
+/// `MTLTexture`, 2D.
+#[repr(C)]
+pub struct SweetMTLTexture {
+    /// This bridge's own state; C never reads or writes it.
+    _state: *mut c_void,
+}
+
+/// `MTLRenderPipelineState`: a vertex function, an optional fragment function and one color
+/// attachment's pixel format.
+#[repr(C)]
+pub struct SweetMTLRenderPipeline {
+    /// This bridge's own state; C never reads or writes it.
+    _state: *mut c_void,
+}
+
+/// `MTLRenderCommandEncoder` of a pass with one color attachment.
+/// [`sweetmtl_render_encoder_end`](crate::sweetmtl_render_encoder_end) consumes the encoder; the
+/// handle is freed separately.
+#[repr(C)]
+pub struct SweetMTLRenderEncoder {
+    /// This bridge's own state; C never reads or writes it.
+    _state: *mut c_void,
+}
+
+/// `MTLBlitCommandEncoder`. [`sweetmtl_blit_encoder_end`](crate::sweetmtl_blit_encoder_end)
+/// consumes the encoder; the handle is freed separately.
+#[repr(C)]
+pub struct SweetMTLBlitEncoder {
+    /// This bridge's own state; C never reads or writes it.
+    _state: *mut c_void,
+}
+
 opaque_handle!(SweetMTLDevice, DeviceState);
 opaque_handle!(SweetMTLBuffer, BufferState);
 opaque_handle!(SweetMTLLibrary, LibraryState);
@@ -131,3 +164,7 @@ opaque_handle!(SweetMTLComputePipeline, ComputePipelineState);
 opaque_handle!(SweetMTLCommandQueue, CommandQueueState);
 opaque_handle!(SweetMTLCommandBuffer, CommandBufferState);
 opaque_handle!(SweetMTLComputeEncoder, ComputeEncoderState);
+opaque_handle!(SweetMTLTexture, TextureState);
+opaque_handle!(SweetMTLRenderPipeline, RenderPipelineStateState);
+opaque_handle!(SweetMTLRenderEncoder, RenderEncoderState);
+opaque_handle!(SweetMTLBlitEncoder, BlitEncoderState);

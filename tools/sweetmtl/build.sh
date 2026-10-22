@@ -1,17 +1,18 @@
 #!/bin/sh
 # Build SweetMTLDriver.bundle - the Metal driver plugin Metal.framework loads for the SweetGPU
-# accelerator on iOS 16 (see README.md) - and its test tool, test/metal_compute.m. Ad-hoc signed,
-# like sweetgl: patch 0085's code-signing relaxation (cs_enforcement_disable + the AMFI dyld
-# policy) is what lets backboardd map it.
+# accelerator on iOS 16 (see README.md) - and its test tools, test/metal_compute.m and
+# test/metal_render.m. Ad-hoc signed, like sweetgl: patch 0085's code-signing relaxation
+# (cs_enforcement_disable + the AMFI dyld policy) is what lets backboardd map it.
 #
 # The kernel points Metal at the bundle with (boot-args):
 #   sweetaccel=1
 #   sweetmtl=../../../usr/lib/sweetmtl/SweetMTLDriver      # no .bundle suffix
 #   sweetmtlclass=SweetMTLDevice
 #
-#   ./build.sh           iPhoneOS arm64: out/SweetMTLDriver.bundle, out/metal_compute and
-#                        out/scale_and_offset.metallib (the last where the Metal toolchain is
-#                        installed; the tool also runs against AIR bitcode)
+#   ./build.sh           iPhoneOS arm64: out/SweetMTLDriver.bundle, out/metal_compute,
+#                        out/metal_render, out/scale_and_offset.metallib and out/triangle.metallib
+#                        (the metallibs where the Metal toolchain is installed; metal_compute also
+#                        runs against AIR bitcode)
 #   ./build.sh --host    macOS, for the local self-check (an Intel Mac gets its own arch): the same
 #                        bundle built against the host's bridge, for the tool's SWEETMTL_DIRECT mode
 #                        (the commands are in README.md, "Where it was tested")
@@ -100,28 +101,35 @@ $CC $FLAGS -I "$H/bridge/include" -o "$B/Contents/MacOS/SweetMTLDriver" \
 
 cp "$H/Info.plist" "$B/Contents/Info.plist"
 
-# The test tool (test/metal_compute.m): MTLCreateSystemDefaultDevice() and the MTL surface, linked
-# against Metal.framework alone - the driver it runs on is the bundle, which Metal loads or (with
-# SWEETMTL_DIRECT) the tool loads itself. Signed like the bundle, so the phone's shell can run it.
+# The test tools (test/metal_compute.m, test/metal_render.m): MTLCreateSystemDefaultDevice() and
+# the MTL surface, linked against Metal.framework alone - the driver they run on is the bundle,
+# which Metal loads or (with SWEETMTL_DIRECT) the tool loads itself. Signed like the bundle, so the
+# phone's shell can run them. metal_render writes a PNG too, hence ImageIO.
 $CC -fobjc-arc -O2 -Wall -Wextra -Wno-protocol -Wno-incomplete-implementation \
 	-Wno-objc-protocol-property-synthesis -I "$H" -I "$H/bridge/include" \
 	-o "$O/metal_compute" "$H/test/metal_compute.m" \
 	-framework Foundation -framework Metal
+$CC -fobjc-arc -O2 -Wall -Wextra -o "$O/metal_render" "$H/test/metal_render.m" \
+	-framework Foundation -framework Metal -framework CoreGraphics -framework ImageIO
 
-# The kernel the tool dispatches, for the same SDK. Xcode 16.3 and later ship the Metal compiler
+# The kernel and the render pair the tools run, for the same SDK. Xcode 16.3 and later ship the Metal compiler
 # as a separate download (`xcodebuild -downloadComponent MetalToolchain`); where it is missing the
 # tool still runs against AIR bitcode (SWEETMTL_AIR=1, README.md "Where it was tested"), so this
 # says so and moves on rather than failing a build whose driver and tool are fine.
 if xcrun -sdk "$SDK" metal --version >/dev/null 2>&1; then
 	xcrun -sdk "$SDK" metal -c "$H/test/scale_and_offset.metal" -o "$O/scale_and_offset.air"
 	xcrun -sdk "$SDK" metallib "$O/scale_and_offset.air" -o "$O/scale_and_offset.metallib"
-	echo "metal: out/scale_and_offset.metallib ($(xcrun -sdk "$SDK" metal --version | head -1))"
+	xcrun -sdk "$SDK" metal -c "$H/test/triangle.metal" -o "$O/triangle.air"
+	xcrun -sdk "$SDK" metallib "$O/triangle.air" -o "$O/triangle.metallib"
+	echo "metal: out/scale_and_offset.metallib, out/triangle.metallib ($(xcrun -sdk "$SDK" metal --version | head -1))"
 else
-	echo "metal: this Xcode has no Metal compiler, out/scale_and_offset.metallib not built" >&2
+	echo "metal: this Xcode has no Metal compiler, the metallibs are not built" >&2
 	echo "       (xcodebuild -downloadComponent MetalToolchain; or use SWEETMTL_AIR=1)" >&2
 fi
 
 codesign -f -s - "$B"
 codesign -f -s - "$O/metal_compute"
+codesign -f -s - "$O/metal_render"
 echo "built $B"
 echo "built $O/metal_compute"
+echo "built $O/metal_render"
