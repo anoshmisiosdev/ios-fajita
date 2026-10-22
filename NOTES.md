@@ -132,7 +132,12 @@
   circular `pNext` chain and `vkCreateDevice` never returned; `p_next` is
   cleared before reuse. `tests/run.sh` also grew three portability fixes found by
   the container run: `cargo fetch` before fixture discovery, the checkout under
-  `$CARGO_HOME` (not `$HOME/.cargo`), and an arch-aware Linux ICD default.
+  `$CARGO_HOME` (not `$HOME/.cargo`), and an arch-aware Linux ICD default. CI is
+  green on both jobs: run 39794500492 (`ios` only, 16m55s, artifact
+  `sweetmtl-bridge-ios` id 12433990229) and run 39796880185 (`lavapipe` 2m55s +
+  `ios`, 18m29s, artifact id 12434731711); the `lavapipe` job's own log carries
+  `device: llvmpipe (LLVM 20.1.2, 256 bits)` / `status: Completed` / the output
+  check / `OK` on ubuntu-24.04 (apt.llvm.org LLVM 21.1.8 + noble's Mesa 25.2.8).
   Not yet: a Turnip run, or any Objective-C caller.
 - **Pipeline status (2026-10-22, observation):** only the kernel hook and
   `tools/sweetmtl/out/SweetMTLDriver.bundle` are built. There is no Turnip /
