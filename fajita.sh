@@ -214,7 +214,7 @@ cmd_qemu_smoke() {
 		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress fajita_dpu=0 sweettouch=0$extra" >/dev/null
 	say "booting the kernel alone in QEMU for 60 s"
 	python3 tools/qemu-sweet.py "$d/q.bin" "$d/out" --secs 60 --accel "$(pick_accel)" || true
-	say "screen: build/qemu-smoke/out/fb.png (expect the console ending at 'Waiting on ... Apple_HFS')"
+	say "screen: build/qemu-smoke/out/fb.png (expect the console ending at 'Waiting on ... Apple_HFS'; on macOS use QEMU_ACCEL=tcg, hvf stops at arm_vm_init)"
 }
 
 # A copy of the root just big enough to hold its files: it becomes a RAM disk.

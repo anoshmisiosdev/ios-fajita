@@ -73,7 +73,27 @@
   iphoneos arm64 (bundle, ad-hoc). Not yet: the metal2vulkan translator
   (steelbrain/metal2vulkan; reference impl: nullmoth/nvidia-macos-driver) and
   Mesa Turnip (`libvulkan_freedreno.dylib`); and `MTLIOAccelDevice` must exist in
-  iOS's Metal.framework (unverified). Never booted.
+  iOS's Metal.framework (unverified). The kernel hook is booted in QEMU (below);
+  the bundle itself is still never loaded (no phone).
+- **No-GPU load check (2026-10-22, observation):** CI run **39769634667 SUCCESS**
+  (9m) on `274888d`; the built kernel contains the strings `IOAcceleratorES`,
+  `MetalPluginName`, `SweetMTLDevice`. Booting it in QEMU with `sweetgpu=0
+  sweetaccel=1 sweetmtl=../../../usr/lib/sweetmtl/SweetMTLDriver
+  sweetmtlclass=SweetMTLDevice` prints `SWEET GPU: SweetGPU registered`,
+  `SWEET GPU: IOAcceleratorES Metal plugin … class SweetMTLDevice`, then the
+  normal `Waiting on … Apple_HFS` — no panic, and no Adreno/GMU/zap bring-up lines
+  with `sweetgpu=0`. A control run without `sweetaccel=1` shows no IOAcceleratorES
+  line, so that flag is what publishes it. So the hook registers and the kernel
+  plays nice with the GPU off. Caveat: `qemu-smoke` needs `QEMU_ACCEL=tcg` on this
+  Mac — the default `hvf` (QEMU 11) stops at `arm_vm_init` and never reaches IOKit
+  (pre-existing: the pre-0087 kernel `f4003e4` halts at the same PC, `_halt_all_cpus`
+  +0x34, with the same screen). This proves registration only; Metal actually
+  loading the bundle needs the phone.
+- **Pipeline status (2026-10-22, observation):** only the kernel hook and
+  `tools/sweetmtl/out/SweetMTLDriver.bundle` are built. There is no Turnip /
+  `libvulkan_freedreno.dylib`, no metal2vulkan translator, no `libvulkan*` and no
+  `sweetgl` anywhere; Mesa 23.1 + newer sources exist only in the session temp dir
+  (`…/opencode/a6xx/`). That is the next build step.
 - Firmware, device dumps and serials stay out of git. Unfinished: hardware bring-up
   (levels 1 -> 8), then Turnip behind the client, then the Metal/`IOAcceleratorES`
   bundle.

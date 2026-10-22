@@ -133,7 +133,7 @@ fastboot boot shim/out/shim-boot.img
 - **Start with `cpus=1`.** Raise to `cpus=8` once SpringBoard is up.
 - **`sweetusb=2`** brings up the USB Ethernet live log. `tools/sweet-usbnet.sh logs/boot.txt` on the PC shows the kernel console without filming the screen.
 - **`cs_enforcement_disable=1` and `sweetenv=…sweetgl.dylib`** are the code-signing bypass that lets `backboardd` load our own GL library; the GPU section explains how it works. The injection is a tolerated no-op until `/usr/lib/sweetgl.dylib` is installed on the phone.
-- **Testing the load path with no GPU:** `SWEETACCEL=1 ./fajita.sh phone` (leave `SWEETGPU=0`) publishes the `IOAcceleratorES` + `MetalPluginName` hook with no Adreno bring-up, so Metal loads `tools/sweetmtl` on its own. `SWEETACCEL=1 ./fajita.sh qemu-smoke` does the kernel half in QEMU (expect `SWEET GPU: IOAcceleratorES ...` on the console).
+- **Testing the load path with no GPU:** `SWEETACCEL=1 ./fajita.sh phone` (leave `SWEETGPU=0`) publishes the `IOAcceleratorES` + `MetalPluginName` hook with no Adreno bring-up, so Metal loads `tools/sweetmtl` on its own. The kernel half runs in QEMU: `SWEETACCEL=1 QEMU_ACCEL=tcg ./fajita.sh qemu-smoke` prints `SWEET GPU: IOAcceleratorES Metal plugin … class …` and then the usual `Waiting on … Apple_HFS` (verified 2026-10-22). Use `QEMU_ACCEL=tcg`: with the default `hvf` the kernel stops at `arm_vm_init` and the console never reaches IOKit.
 - **After a hang,** boot recovery and run `tools/sweet-log-pull.sh logs/boot.txt`. It finds `userdata` by name.
 - **Touch starts 45 s after boot** (`sweettouchdelay`), so a hang there can't hide earlier logs.
 
