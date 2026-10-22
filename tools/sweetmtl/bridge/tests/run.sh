@@ -25,7 +25,8 @@
 # device, library, pipeline, encoder, commit -- and then dies in Lavapipe's *own* shader compiler
 # (SIGSEGV in libLLVM.dylib's DAGTypeLegalizer while its worker JITs the shader the runtime
 # dispatched); a trivial hand-written SPIR-V kernel dispatches cleanly on the same ICD, so that is
-# the platform's CPU driver, not the bridge. See README.md. Run this on Linux for a pass.
+# the platform's CPU driver, not the bridge. See README.md. For a pass on macOS, pass MoltenVK's
+# libMoltenVK.dylib as the ICD (2026-10-22, MoltenVK 1.4.2 on an M4 Pro: OK); on Linux, Lavapipe.
 set -eu
 H=$(cd "$(dirname "$0")/.." && pwd)
 REL=crates/metal2vulkan-validation/fixtures/public/examples/runtime_examples.ll

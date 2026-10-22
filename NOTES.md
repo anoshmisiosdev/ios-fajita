@@ -215,6 +215,43 @@
   52883814…). That exclusion was then confirmed: the next commit (`3358412`,
   only `NOTES.md` and `tools/sweetmtl/README.md`) started no run at all — the
   newest run stayed 39864198007.
+- **The driver over MoltenVK on this Mac (2026-10-22, observation):** the first
+  host read-back. Machine: Mac16,8 (Apple M4 Pro), macOS 27.0 (26A428). ICD:
+  Homebrew `molten-vk` **1.4.2** (`brew install molten-vk` upgraded 1.4.1),
+  `/opt/homebrew/Cellar/molten-vk/1.4.2/lib/libMoltenVK.dylib`, whose
+  `nm -gU` lists `_vk_icdGetInstanceProcAddr`,
+  `_vk_icdGetPhysicalDeviceProcAddr` and
+  `_vk_icdNegotiateLoaderICDInterfaceVersion`; no loader. `llvm-as`: Homebrew
+  `llvm@21` 21.1.8. Built as before: `cargo build --release` in `bridge/`, then
+  `sh build.sh --host` (bridge `.a` 72 185 464 bytes, metallib from Apple metal
+  32023.921). (1) `METAL2VULKAN_LLVM_AS=/opt/homebrew/opt/llvm@21/bin/llvm-as
+  MVK_CONFIG_LOG_LEVEL=2 sh tests/run.sh <libMoltenVK.dylib>` →
+  `device: Apple M4 Pro`, `pipeline: 1024 threads per threadgroup at most, SIMD
+  width 32`, `status: Completed`, `output[0..4] = 0 3 6 9, ..., output[999] =
+  2997: as expected`, `sweetmtl-bridge: compute_dispatch through the C ABI: OK`,
+  exit 0. (2) `SWEETMTL_DIRECT=out/SweetMTLDriver.bundle
+  SWEETMTL_ICD=<libMoltenVK.dylib> ./out/metal_compute
+  out/scale_and_offset.metallib` → `sweetmtl: initWithAcceleratorPort:0 pid …
+  (metal_compute)`, `sweetmtl: ICD …/libMoltenVK.dylib (SWEETMTL_ICD)`,
+  `sweetmtl: device: Apple M4 Pro`, `device: Apple M4 Pro (SweetMTLDevice)`,
+  `library: metallib: out/scale_and_offset.metallib`,
+  `sweetmtl: unimplemented -[SweetMTLLibrary functionNames]`, `pipeline: 1024
+  threads per threadgroup at most, SIMD width 32`, `committed; waiting`,
+  `status: Completed`, `output[0..4] = 0 3 6 9, ..., output[999] = 2997: as
+  expected`, `sweetmtl: metal_compute through Metal.framework: OK`, exit 0.
+  `SWEETMTL_AIR=1` with `out/scale_and_offset.air` also ends `OK`, exit 0. **No
+  bridge change was needed**: `core_enables` in `backend.rs` already enables
+  `VK_KHR_portability_subset` when the device lists it, and with the ICD opened
+  directly there is no loader to filter out a portability driver, so
+  `VK_KHR_portability_enumeration` never comes up. metal2vulkan accepted the
+  device with four non-fatal diagnostics: `[metal2vulkan-unmeasured-driver]`
+  (MoltenVK driverVersion 10402 / 0x28a2; its tables measured through 0x28a1),
+  `[metal2vulkan-degrade-moltenvk-argument-buffers-unread]`,
+  `[metal2vulkan-degrade-beyond-measured-deviation]` and
+  `[metal2vulkan-degrade-split-dispatch]` (a 1000-thread grid in 64-wide groups).
+  `MVK_CONFIG_LOG_LEVEL=2` printed no MoltenVK error lines. So the Lavapipe
+  SIGSEGV above stays Homebrew LLVM 22's, and the driver's whole path —
+  metallib door, pipeline, dispatch, read-back — is now seen on macOS.
 - **Pipeline status (2026-10-22, observation):** the kernel hook, the bridge
   (`tools/sweetmtl/bridge/`) and `tools/sweetmtl/out/SweetMTLDriver.bundle`
   (driver + bridge + tool, iphoneos arm64) are built. There is no Turnip /

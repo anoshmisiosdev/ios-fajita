@@ -196,9 +196,38 @@ runs, against `llvm-as` output).
 
 ## Where it was tested
 
-- **On this Mac, the Objective-C layer runs to the same platform limit the
-  bridge's C test has.** `./build.sh --host`, then with Homebrew Mesa 26.0.2's
-  Lavapipe and no loader:
+- **On this Mac, over MoltenVK, it passes end to end** (2026-10-22: Mac16,8,
+  Apple M4 Pro, macOS 27.0 26A428, Homebrew MoltenVK 1.4.2, no loader).
+  `./build.sh --host`, then:
+
+  ```sh
+  SWEETMTL_DIRECT=out/SweetMTLDriver.bundle \
+  SWEETMTL_ICD=/opt/homebrew/Cellar/molten-vk/1.4.2/lib/libMoltenVK.dylib \
+  ./out/metal_compute out/scale_and_offset.metallib
+  ```
+
+  prints `sweetmtl: device: Apple M4 Pro`, `device: Apple M4 Pro
+  (SweetMTLDevice)`, `library: metallib: out/scale_and_offset.metallib`,
+  `pipeline: 1024 threads per threadgroup at most, SIMD width 32`,
+  `committed; waiting`, `status: Completed`,
+  `output[0..4] = 0 3 6 9, ..., output[999] = 2997: as expected` and
+  `sweetmtl: metal_compute through Metal.framework: OK`, exit 0 — the read-back
+  Lavapipe never let this machine see. `SWEETMTL_AIR=1` with
+  `out/scale_and_offset.air` (the driver's own AIR door) passes the same way.
+  The bridge needed no change: it already enables `VK_KHR_portability_subset`
+  on a device that lists it, and an instance made straight from the ICD has no
+  loader to hide a portability driver, so `VK_KHR_portability_enumeration` does
+  not come into it. metal2vulkan accepts the device, saying so in four
+  diagnostics — `[metal2vulkan-unmeasured-driver]` (MoltenVK driverVersion
+  10402 is newer than the 10401 its tables measured),
+  `[metal2vulkan-degrade-moltenvk-argument-buffers-unread]`,
+  `[metal2vulkan-degrade-beyond-measured-deviation]` and
+  `[metal2vulkan-degrade-split-dispatch]` (1000 threads are not a whole number
+  of 64-wide groups) — none of them a refusal. `MVK_CONFIG_LOG_LEVEL=2` printed
+  no MoltenVK errors.
+- **With Homebrew Lavapipe instead, the Objective-C layer runs to the same
+  platform limit the bridge's C test has.** `./build.sh --host`, then with
+  Homebrew Mesa 26.0.2's Lavapipe and no loader:
 
   ```sh
   SWEETMTL_DIRECT=out/SweetMTLDriver.bundle \
@@ -351,8 +380,15 @@ name, `bridge/tests/compute.c` and cbindgen's header are exactly as they were.
   ABI, from the ICD's `vk_icdGetInstanceProcAddr` to a dispatched grid whose
   results are read back and checked. The CI `lavapipe` job runs that same test
   on `ubuntu-24.04` with apt.llvm.org's LLVM 21 and noble's Lavapipe.
-- **On this Mac it stops at the last step**, and the reason is the platform, not
-  the bridge: `sweetmtl_command_buffer_wait_until_completed` takes SIGSEGV
+- **It passes on this Mac over MoltenVK** (1.4.2, Apple M4 Pro, macOS 27.0, no
+  loader): `METAL2VULKAN_LLVM_AS=/opt/homebrew/opt/llvm@21/bin/llvm-as sh
+  tests/run.sh /opt/homebrew/Cellar/molten-vk/1.4.2/lib/libMoltenVK.dylib` ends in
+  `device: Apple M4 Pro` … `status: Completed` …
+  `output[0..4] = 0 3 6 9, ..., output[999] = 2997: as expected` …
+  `sweetmtl-bridge: compute_dispatch through the C ABI: OK`, exit 0, with no
+  bridge change.
+- **Over Homebrew Lavapipe on this Mac it stops at the last step**, and the
+  reason is the platform, not the bridge: `sweetmtl_command_buffer_wait_until_completed` takes SIGSEGV
   inside `libLLVM.dylib`'s `DAGTypeLegalizer::PromoteIntRes_Select` — Lavapipe's
   own shader compiler, reached on one of its worker threads while the dispatch
   runs. No bridge or runtime frame is in that stack. Controls: a trivial
