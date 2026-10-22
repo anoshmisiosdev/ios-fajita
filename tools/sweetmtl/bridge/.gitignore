@@ -1,5 +1,7 @@
 # cargo's build tree (the crates this links are big: ~70 MB staticlib)
 /target/
+# a second tree for the Linux test runs (tests/run.sh honours CARGO_TARGET_DIR)
+/target-linux/
 # tests/run.sh's compiled test binary
 /tests/compute
 # the CI job's staged artifacts

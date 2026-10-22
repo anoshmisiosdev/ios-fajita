@@ -17,8 +17,8 @@
 #   METAL2VULKAN_DIR       a metal2vulkan checkout to take the fixture from
 #   CC                     the C compiler
 #
-# Defaults: Mesa's Lavapipe ICD (/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so on Linux, Homebrew's
-# /opt/homebrew/Cellar/mesa/…/lib/libvulkan_lvp.dylib on macOS), `llvm-as` from PATH then
+# Defaults: Mesa's Lavapipe ICD (Linux: /usr/lib/<machine>-linux-gnu/libvulkan_lvp.so; macOS:
+# Homebrew's /opt/homebrew/Cellar/mesa/…/lib/libvulkan_lvp.dylib), `llvm-as` from PATH then
 # Homebrew's LLVM 21, and the fixture from cargo's checkout of the revision Cargo.toml pins.
 #
 # On macOS (2026-10-22, Homebrew Mesa 26.0.2 / LLVM 22.1) the test gets through the whole ABI --
@@ -46,7 +46,10 @@ find_llvm_as() {
 
 find_fixture() {
     rev=$(sed -n 's/.*rev = "\([0-9a-f]\{40\}\)".*/\1/p' "$H/Cargo.toml" | head -1)
-    for dir in "$HOME"/.cargo/git/checkouts/metal2vulkan-*/*; do
+    # `$CARGO_HOME`, not `$HOME/.cargo`: a container's toolchain sets it elsewhere (the Rust image
+    # uses /usr/local/cargo), and that is where the `cargo fetch` below puts the checkout.
+    checkouts=${CARGO_HOME:-$HOME/.cargo}/git/checkouts
+    for dir in "$checkouts"/metal2vulkan-*/*; do
         [ -d "$dir" ] || continue
         if [ -n "$rev" ] && [ "$(basename "$dir")" != "$rev" ]; then
             continue
@@ -56,7 +59,7 @@ find_fixture() {
             return 0
         fi
     done
-    for dir in "$HOME"/.cargo/git/checkouts/metal2vulkan-*/*; do
+    for dir in "$checkouts"/metal2vulkan-*/*; do
         [ -f "$dir/$REL" ] || continue
         echo "$dir/$REL"
         return 0
@@ -80,7 +83,17 @@ find_icd() {
     if [ "$(uname -s)" = "Darwin" ]; then
         ls /opt/homebrew/Cellar/mesa/*/lib/libvulkan_lvp.dylib 2>/dev/null | tail -1
     else
-        echo /usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+        # Debian/Ubuntu name the directory after the machine, so this covers x86_64 and aarch64.
+        for candidate in "/usr/lib/$(uname -m)-linux-gnu/libvulkan_lvp.so" \
+                         /usr/lib/x86_64-linux-gnu/libvulkan_lvp.so \
+                         /usr/lib/aarch64-linux-gnu/libvulkan_lvp.so \
+                         /usr/lib/libvulkan_lvp.so; do
+            if [ -f "$candidate" ]; then
+                echo "$candidate"
+                return 0
+            fi
+        done
+        return 1
     fi
 }
 
@@ -93,6 +106,9 @@ LLVM_AS=$(find_llvm_as) || {
     echo "run.sh: no llvm-as: install LLVM 21 or set METAL2VULKAN_LLVM_AS" >&2
     exit 2
 }
+# The fixture lives in cargo's checkout of the revision Cargo.toml pins - which a machine (or a
+# container) that has never built this crate does not have yet, so fetch it before looking.
+(cd "$H" && cargo fetch --quiet)
 FIXTURE=$(find_fixture) || {
     echo "run.sh: cannot find $REL: set METAL2VULKAN_DIR to a metal2vulkan checkout" >&2
     exit 2
@@ -105,7 +121,7 @@ echo "fixture: $FIXTURE"
 # The bridge, as a cdylib the test links against (the same crate builds the staticlib and the
 # aarch64-apple-ios artifacts; see README.md).
 (cd "$H" && cargo build --quiet)
-LIBDIR=$H/target/debug
+LIBDIR=${CARGO_TARGET_DIR:-$H/target}/debug
 CC=${CC:-cc}
 $CC -std=c11 -O2 -Wall -Wextra -I "$H/include" "$H/tests/compute.c" \
     -L "$LIBDIR" -lsweetmtl_bridge -Wl,-rpath,"$LIBDIR" -o "$H/tests/compute"

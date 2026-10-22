@@ -68,3 +68,37 @@ jobs:
           name: sweetmtl-bridge-ios
           path: tools/sweetmtl/bridge/out/
           if-no-files-found: error
+
+  # The bridge's C test, where it is written to pass: the system Lavapipe by path, with no Vulkan
+  # loader. (On a Mac the same test gets through the whole ABI and then dies inside Lavapipe's own
+  # LLVM JIT for the shader the runtime dispatches; see tools/sweetmtl/README.md.)
+  lavapipe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: tools/sweetmtl/bridge
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lavapipe, and LLVM 21 for the fixture
+        # The fixture needs LLVM 20+ (`captures(none)`); noble's own LLVM 18 and trixie's 19 cannot
+        # assemble it. Noble's `mesa-vulkan-drivers` carries the Lavapipe ICD the test is run with.
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key |
+            sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          sudo sh -c 'echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" > /etc/apt/sources.list.d/llvm.list'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq llvm-21 mesa-vulkan-drivers
+          /usr/lib/llvm-21/bin/llvm-as --version | head -1
+          ls -l /usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+
+      - name: Toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: The C ABI test, against the system ICD
+        env:
+          METAL2VULKAN_LLVM_AS: /usr/lib/llvm-21/bin/llvm-as
+        run: sh tests/run.sh /usr/lib/x86_64-linux-gnu/libvulkan_lvp.so

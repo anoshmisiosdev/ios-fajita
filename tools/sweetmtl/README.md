@@ -117,8 +117,9 @@ tools/sweetmtl/bridge/
   tests/compute.c            the C test: the runtime's compute_dispatch example over the ABI
   tests/run.sh               assembles the fixture and runs it against a bare Mesa ICD
 .github/workflows/sweetmtl-bridge.yml
-                             builds for aarch64-apple-ios, checks the header, uploads
-                             `libsweetmtl_bridge.a`, `.dylib` and the header
+                             `ios` job: builds for aarch64-apple-ios, checks the header,
+                             uploads `libsweetmtl_bridge.a`, `.dylib` and the header
+                             `lavapipe` job: runs the C test on Linux
 ```
 
 The ABI (33 functions, 8 handle types) is one milestone of `MTLDevice`: open a
@@ -173,21 +174,33 @@ it forever. The bridge clears `p_next` on both structures before reusing them.
   (and its "1024 threads per threadgroup at most, SIMD width 32"),
   the encoder with its buffers, and `commit` all work — the whole C ABI up to
   submission.
-- **Then the platform's CPU driver dies, not the bridge.**
-  `sweetmtl_command_buffer_wait_until_completed` takes SIGSEGV inside
-  `libLLVM.dylib`'s `DAGTypeLegalizer::PromoteIntRes_Select` — Lavapipe's own
-  shader compiler, reached on one of its worker threads while the dispatch runs.
-  No bridge or runtime frame is in that stack. Controls: a trivial hand-written
-  SPIR-V kernel (`void main() {}`, no metal2vulkan) dispatches cleanly on the
-  same ICD, with no features and with every reported one; and the translated
-  module metal2vulkan caches also compiles there (it then faults on the null
-  descriptor that test never binds). So this is llvmpipe's LLVM JIT failing on
-  the shader variant the runtime dispatches on this macOS/arm64/LLVM 22.1 build,
-  not an ICD that cannot dispatch at all. `tests/run.sh` defaults to the Linux
-  ICD path, where the test is expected to pass; on this Mac it stops at that one
-  step.
+- **It passes on Linux**, which is what the test is written for: in a Debian 13
+  (trixie) arm64 container, against the system Lavapipe at
+  `/usr/lib/aarch64-linux-gnu/libvulkan_lvp.so` (Mesa 25.0.7, LLVM 19.1.7) with
+  no loader, `tests/run.sh` ends in
+  `device: llvmpipe (LLVM 19.1.7, 128 bits)` … `status: Completed` …
+  `output[0..4] = 0 3 6 9, ..., output[999] = 2997: as expected` …
+  `sweetmtl-bridge: compute_dispatch through the C ABI: OK`, exit 0 — the whole
+  ABI, from the ICD's `vk_icdGetInstanceProcAddr` to a dispatched grid whose
+  results are read back and checked. The CI `lavapipe` job runs that same test
+  on `ubuntu-24.04` with apt.llvm.org's LLVM 21 and noble's Lavapipe.
+- **On this Mac it stops at the last step**, and the reason is the platform, not
+  the bridge: `sweetmtl_command_buffer_wait_until_completed` takes SIGSEGV
+  inside `libLLVM.dylib`'s `DAGTypeLegalizer::PromoteIntRes_Select` — Lavapipe's
+  own shader compiler, reached on one of its worker threads while the dispatch
+  runs. No bridge or runtime frame is in that stack. Controls: a trivial
+  hand-written SPIR-V kernel (`void main() {}`, no metal2vulkan) dispatches
+  cleanly on the same ICD, with no features and with every reported one; the
+  translated module metal2vulkan caches also compiles there (it then faults on
+  the null descriptor that test never binds); and the same test passes on Linux
+  with the same Mesa. So this is llvmpipe's LLVM *22.1* JIT — the one build that
+  differs — failing on the shader variant the runtime dispatches, not an ICD that
+  cannot dispatch at all.
 - Never tested: anything on hardware, and any Turnip build.
 
 Run it with `sh tests/run.sh [<icd-path>]`; `SWEETMTL_VK_ICD`,
 `METAL2VULKAN_LLVM_AS` (LLVM 21's `llvm-as`) and `METAL2VULKAN_DIR` override what
-it finds.
+it finds. The script fetches the pinned metal2vulkan before looking for the
+fixture (a fresh machine, or a container, has no checkout yet), finds the
+checkout under `$CARGO_HOME` rather than `$HOME/.cargo` (a container toolchain
+sets it elsewhere), and picks the ICD by architecture on Linux.

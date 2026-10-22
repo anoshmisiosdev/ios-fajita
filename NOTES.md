@@ -107,21 +107,33 @@
   those same structures are chained into `VkDeviceCreateInfo` — "enable exactly
   what the device reports", no copy of the runtime's private member table.
   Asked for: `cargo check` and `cargo build --release` for `aarch64-apple-ios`
-  pass, and CI job `.github/workflows/sweetmtl-bridge.yml` builds and uploads
-  `.a`/`.dylib`/header. **Tested against bare Lavapipe (macOS Mesa 26.0.2,
-  LLVM 22.1, no loader):** device creation/name, library, function, compute
-  pipeline, encoder, buffers and `commit` all succeed — but
+  pass, and CI job `.github/workflows/sweetmtl-bridge.yml` (`ios`) builds and
+  uploads `.a`/`.dylib`/header. **Tested two places.** (1) In a Debian 13
+  (trixie) arm64 container against the system Lavapipe
+  (`/usr/lib/aarch64-linux-gnu/libvulkan_lvp.so`, Mesa 25.0.7, LLVM 19.1.7, no
+  loader) `tests/run.sh` **passes end to end**: `device: llvmpipe (LLVM 19.1.7,
+  128 bits)`, `pipeline: 1024 threads per threadgroup at most, SIMD width 32`,
+  `status: Completed`, `output[0..4] = 0 3 6 9, ..., output[999] = 2997: as
+  expected`, `sweetmtl-bridge: compute_dispatch through the C ABI: OK`, exit 0 —
+  the runtime's `compute_dispatch` example through the C ABI, results read back
+  and checked. The CI `lavapipe` job (ubuntu-24.04, apt.llvm.org LLVM 21 +
+  noble's Lavapipe) runs that same test. (2) Against bare Lavapipe on macOS
+  (Homebrew Mesa 26.0.2, LLVM 22.1, no loader) device creation/name, library,
+  function, compute pipeline, encoder, buffers and `commit` all succeed — but
   `wait_until_completed` then dies SIGSEGV inside `libLLVM.dylib`'s
-  `DAGTypeLegalizer::PromoteIntRes_Select`, i.e. Lavapipe's *own* shader
-  compiler on a worker thread, with no bridge frame in the stack. Controls: a
-  hand-written trivial SPIR-V kernel dispatches cleanly on the same ICD, and so
-  does metal2vulkan's cached module in a runtime-free program, so this is
-  llvmpipe's LLVM JIT on this macOS/arm64/LLVM-22.1 build, not the bridge.
+  `DAGTypeLegalizer::PromoteIntRes_Select`, i.e. Lavapipe's *own* shader compiler
+  on a worker thread, with no bridge frame in the stack. Controls: a hand-written
+  trivial SPIR-V kernel dispatches cleanly on the same ICD, metal2vulkan's cached
+  module compiles in a runtime-free program, and the same test passes on Linux
+  with the same Mesa — so it is llvmpipe's LLVM *22.1* JIT (the one build that
+  differs) failing on the shader variant the runtime dispatches, not the bridge.
   Hazard worth remembering: ash's `push_next` rewires the *pushed* structure's
   existing chain, so reusing the query's `v11`/`v12` in the create info made a
   circular `pNext` chain and `vkCreateDevice` never returned; `p_next` is
-  cleared before reuse. Not yet: the C test on Linux (the ICD path it defaults
-  to), a Turnip run, or any Objective-C caller.
+  cleared before reuse. `tests/run.sh` also grew three portability fixes found by
+  the container run: `cargo fetch` before fixture discovery, the checkout under
+  `$CARGO_HOME` (not `$HOME/.cargo`), and an arch-aware Linux ICD default.
+  Not yet: a Turnip run, or any Objective-C caller.
 - **Pipeline status (2026-10-22, observation):** only the kernel hook and
   `tools/sweetmtl/out/SweetMTLDriver.bundle` are built. There is no Turnip /
   `libvulkan_freedreno.dylib`, no Turnip, no `libvulkan*` and no
