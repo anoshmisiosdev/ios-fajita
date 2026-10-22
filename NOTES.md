@@ -212,7 +212,9 @@
   starts a build) re-ran green as **39864198007**: `ios` 6m47s, `lavapipe` 2m37s,
   `driver` 16s, `sweetmtl-bridge-ios` ID 12463871030 (28 145 904 bytes, sha256
   43f759f0…), `sweetmtl-driver-ios` ID 12463866495 (11 829 688 bytes, sha256
-  52883814…).
+  52883814…). That exclusion was then confirmed: the next commit (`3358412`,
+  only `NOTES.md` and `tools/sweetmtl/README.md`) started no run at all — the
+  newest run stayed 39864198007.
 - **Pipeline status (2026-10-22, observation):** the kernel hook, the bridge
   (`tools/sweetmtl/bridge/`) and `tools/sweetmtl/out/SweetMTLDriver.bundle`
   (driver + bridge + tool, iphoneos arm64) are built. There is no Turnip /
