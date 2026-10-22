@@ -53,6 +53,14 @@
   and every client shares one address space covering PA 2-8 GB, so any GPU
   client can reach all RAM. This is acceptable for bring-up; it belongs to the
   security work (per-client address spaces, CP_PROTECT, etc.).
+- **Loading the userland GL driver (2026-10-22):** FAJITA.md now records the
+  ios-sailfish signing bypass, and both boot lines carry `cs_enforcement_disable=1`
+  and `sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/lib/sweetgl.dylib`. The kernel
+  side is already in 0085 (ios-sailfish `0104` `sweetenv` + `0139` AMFI policy syscall
+  op 0x5a -> flags 0x7b, policy renamed to "AMFI"), on top of the permissive
+  `sweet_amfi_vnode_check_signature`. Still missing: an A630 build of `tools/sweetgl`
+  and its install to `/usr/lib/sweetgl.dylib`; until then the injection is a tolerated
+  no-op. None of this is booted with it yet.
 - Firmware, device dumps and serials stay out of git. Unfinished: hardware bring-up
   (levels 1 -> 8), then Turnip behind the client, then the Metal/`IOAcceleratorES`
   bundle.

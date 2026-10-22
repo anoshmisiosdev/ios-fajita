@@ -124,7 +124,7 @@ Build `ios16-root.img` from the iPhone X 16.7.16 IPSW with `tools/mkiosroot.sh` 
 ```
 python3 tools/mkadt.py shim/out/fajita.adt --highmem
 python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/fajita.adt shim/out/payload.bin \
-    --cmdline 'debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetusb=2'
+    --cmdline 'debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetusb=2 cs_enforcement_disable=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/lib/sweetgl.dylib'
 shim/build.sh ../shim/out/payload.bin
 fastboot -S 512M flash userdata ios16-root.simg      # erases userdata
 fastboot boot shim/out/shim-boot.img
@@ -132,6 +132,7 @@ fastboot boot shim/out/shim-boot.img
 
 - **Start with `cpus=1`.** Raise to `cpus=8` once SpringBoard is up.
 - **`sweetusb=2`** brings up the USB Ethernet live log. `tools/sweet-usbnet.sh logs/boot.txt` on the PC shows the kernel console without filming the screen.
+- **`cs_enforcement_disable=1` and `sweetenv=…sweetgl.dylib`** are the code-signing bypass that lets `backboardd` load our own GL library; the GPU section explains how it works. The injection is a tolerated no-op until `/usr/lib/sweetgl.dylib` is installed on the phone.
 - **After a hang,** boot recovery and run `tools/sweet-log-pull.sh logs/boot.txt`. It finds `userdata` by name.
 - **Touch starts 45 s after boot** (`sweettouchdelay`), so a hang there can't hide earlier logs.
 
@@ -154,6 +155,38 @@ SWEETGPU=1 ./fajita.sh phone    # boot image with the blobs + sweetgpu=1
 Bring-up levels for `sweetgpu=` (0 = off, the default): 1 clocks and power + GPU id, 2 adds IOMMU + GMU + HFI, 3 adds the command processor + zap shader + a self-test, 8 is service mode for the userland. Step up one level per boot; after a hang, the UFS log shows the last stage reached.
 
 After the kernel driver: Turnip (Mesa's Vulkan driver) on the same interface, then a Metal driver bundle on top of Vulkan, registered through `IOAcceleratorES` `MetalPluginName`.
+
+### Loading the userland driver: how an outside bundle gets in
+
+Stock iOS only lets system processes run Apple-signed code that is already in the
+shared cache, so an outside dylib in `backboardd` would be refused. The kernel
+turns both halves of that rule off, exactly as ios-sailfish does on the Pixel 1:
+
+- **`cs_enforcement_disable=1`** — a stock XNU development boot-arg (not one of our
+  patches). It stops code-signing enforcement at the mapping layer, so the
+  ad-hoc-signed dylib's code pages can run.
+- **`launchd_unsecure_cache=1`** (already in the boot line) — brings the shared
+  cache up without AMFI.
+- **`sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/lib/sweetgl.dylib`** — at exec
+  time the kernel appends the variable to `backboardd`'s environment (patch `0085`,
+  carried unchanged from ios-sailfish `0104`).
+- **The AMFI policy syscall** — dyld then asks AMFI which `DYLD_*` variables it may
+  honour, with `__mac_syscall("AMFI", 0x5a, {in_flags, *out_flags})`. Patch `0085`
+  (carried from ios-sailfish `0139`) registers an AMFI policy syscall that answers
+  `0x7b` — paths, path variables, fallback paths, print variables, failed insertions
+  and interposing — and renames the policy to exactly `"AMFI"` so the call finds it
+  by name. Without this, dyld clears every `DYLD_*` flag and the injection is
+  silently ignored. The `failed insertions` bit is what makes a missing or bad dylib
+  harmless to `backboardd`.
+
+The dylib itself (`tools/sweetgl/build.sh`) is built against the Mesa freedreno
+driver, ad-hoc signed (`codesign -f -s -`) and zero-padded to 64 MiB so it can be
+rewritten in place; its constructor installs the EAGL interposition so
+CoreAnimation's GL renderer runs on Mesa through the SweetGPU user client instead of
+Apple's GPU stack. **That library is not in this repository yet** — it is the A530
+(Pixel 1) build and needs an A630 pass. Until it is copied to `/usr/lib/sweetgl.dylib`
+on the phone the `sweetenv` injection does nothing. The kernel side of the bypass is
+already in `0085`, so the boot line above is safe to use as-is.
 
 ## Review
 

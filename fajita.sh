@@ -293,7 +293,7 @@ cmd_phone() {
 		say "GPU bring-up level sweetgpu=$gpu (firmware from build/gpu-fw)"
 	fi
 	python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/fajita.adt shim/out/payload.bin ${blobs[@]+"${blobs[@]}"} \
-		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetusb=2 sweetgpu=$gpu" >/dev/null
+		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetusb=2 sweetgpu=$gpu cs_enforcement_disable=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/lib/sweetgl.dylib" >/dev/null
 	shim/build.sh ../shim/out/payload.bin >/dev/null
 	say "phone boot image: shim/out/shim-boot.img"
 	cat <<-EOF
