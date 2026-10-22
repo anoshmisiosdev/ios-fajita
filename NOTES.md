@@ -207,7 +207,12 @@
   an `out/SHA256SUMS`. So the ObjC side, its link against the bridge artifact and
   the tool's own compile are checked for iphoneos in CI, not first on the phone.
   The `lavapipe` job again ended in `status: Completed` / `output[999] = 2997: as
-  expected` / `OK`.
+  expected` / `OK`. A second push of this same handoff (`10f3a4a`, which also
+  narrowed the workflow's `paths:` so markdown under `tools/sweetmtl/` no longer
+  starts a build) re-ran green as **39864198007**: `ios` 6m47s, `lavapipe` 2m37s,
+  `driver` 16s, `sweetmtl-bridge-ios` ID 12463871030 (28 145 904 bytes, sha256
+  43f759f0…), `sweetmtl-driver-ios` ID 12463866495 (11 829 688 bytes, sha256
+  52883814…).
 - **Pipeline status (2026-10-22, observation):** the kernel hook, the bridge
   (`tools/sweetmtl/bridge/`) and `tools/sweetmtl/out/SweetMTLDriver.bundle`
   (driver + bridge + tool, iphoneos arm64) are built. There is no Turnip /

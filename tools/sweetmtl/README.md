@@ -224,8 +224,8 @@ runs, against `llvm-as` output).
 - **The C ABI under it passes on Linux** — the same dispatch with the same
   expected results, from the ICD's `vk_icdGetInstanceProcAddr` to the read-back
   (see `bridge/` below). That is what the CI `lavapipe` job runs.
-- **The same build runs in CI**, in the workflow's `driver` job (run
-  39863197926 on `b4ddeb3`): the `ios` job's `libsweetmtl_bridge.a` comes back as
+- **The same build runs in CI**, in the workflow's `driver` job (runs
+  39863197926 on `b4ddeb3` and 39864198007 on `10f3a4a`): the `ios` job's `libsweetmtl_bridge.a` comes back as
   an artifact, `sh build.sh` runs against it, and the bundle, the tool and the
   metallib are uploaded as `sweetmtl-driver-ios`. That is compiling and linking
   for iphoneos only — nothing on a runner executes the driver, because nothing
