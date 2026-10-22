@@ -1,17 +1,18 @@
 name: sweetmtl-bridge
 
-# The C ABI over metal2vulkan's runtime that SweetMTLDevice (backboardd on the phone) links: it is
-# built for the device here, so a change that only compiles on the host still fails the build.
+# The C ABI over metal2vulkan's runtime that SweetMTLDevice (backboardd on the phone) links, and
+# the driver bundle that links it: both are built for the device here, so a change that only
+# compiles on the host still fails the build.
 on:
   workflow_dispatch:
   push:
     branches: [main, fajita-gpu]
     paths:
-      - "tools/sweetmtl/bridge/**"
+      - "tools/sweetmtl/**"
       - ".github/workflows/sweetmtl-bridge.yml"
   pull_request:
     paths:
-      - "tools/sweetmtl/bridge/**"
+      - "tools/sweetmtl/**"
 
 concurrency:
   group: sweetmtl-bridge-${{ github.ref }}
@@ -67,6 +68,49 @@ jobs:
         with:
           name: sweetmtl-bridge-ios
           path: tools/sweetmtl/bridge/out/
+          if-no-files-found: error
+
+  # SweetMTLDriver.bundle and its test tool, built from the `ios` job's bridge artifact: the ObjC
+  # layer, its link against the bridge, and the tool's own compile are what the phone would run, so
+  # they are checked here rather than first on the device. build.sh is the same script a developer
+  # runs locally (`./build.sh`, SWEETMTL_BRIDGE_ARTIFACT naming the artifact).
+  driver:
+    needs: ios
+    runs-on: macos-14
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: tools/sweetmtl
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sweetmtl-bridge-ios
+          path: tools/sweetmtl/bridge/out/
+
+      - name: The driver and its test tool
+        env:
+          SWEETMTL_BRIDGE_ARTIFACT: ${{ github.workspace }}/tools/sweetmtl/bridge/out
+        run: sh build.sh
+
+      - name: Stage
+        run: |
+          # The metallib is built only where the runner's Xcode has the Metal compiler (Xcode 16.3+
+          # needs `xcodebuild -downloadComponent MetalToolchain`); build.sh says so and carries on.
+          cd out
+          for f in metal_compute scale_and_offset.metallib; do
+            [ -f "$f" ] && shasum -a 256 "$f" >> SHA256SUMS
+          done
+          shasum -a 256 SweetMTLDriver.bundle/Contents/MacOS/SweetMTLDriver >> SHA256SUMS
+          file SweetMTLDriver.bundle/Contents/MacOS/SweetMTLDriver metal_compute
+          ls -la
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sweetmtl-driver-ios
+          path: tools/sweetmtl/out/
           if-no-files-found: error
 
   # The bridge's C test, where it is written to pass: the system Lavapipe by path, with no Vulkan

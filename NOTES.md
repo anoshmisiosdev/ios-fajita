@@ -72,9 +72,10 @@
   signed) and installs to `/usr/lib/sweetmtl/`. `build.sh` compiles clean for
   iphoneos arm64 (bundle, ad-hoc). Not yet: the metal2vulkan translator
   (steelbrain/metal2vulkan; reference impl: nullmoth/nvidia-macos-driver) and
-  Mesa Turnip (`libvulkan_freedreno.dylib`); and `MTLIOAccelDevice` must exist in
-  iOS's Metal.framework (unverified). The kernel hook is booted in QEMU (below);
-  the bundle itself is still never loaded (no phone).
+  Mesa Turnip (`libvulkan_freedreno.dylib`); `MTLIOAccelDevice` in iOS's
+  Metal.framework was unverified here and is answered below (2026-10-22: it is
+  in the SDK's Metal.tbd). The kernel hook is booted in QEMU (below); the bundle
+  itself is still never loaded (no phone).
 - **No-GPU load check (2026-10-22, observation):** CI run **39769634667 SUCCESS**
   (9m) on `274888d`; the built kernel contains the strings `IOAcceleratorES`,
   `MetalPluginName`, `SweetMTLDevice`. Booting it in QEMU with `sweetgpu=0
@@ -139,14 +140,63 @@
   `device: llvmpipe (LLVM 20.1.2, 256 bits)` / `status: Completed` / the output
   check / `OK` on ubuntu-24.04 (apt.llvm.org LLVM 21.1.8 + noble's Mesa 25.2.8).
   Not yet: a Turnip run, or any Objective-C caller.
-- **Pipeline status (2026-10-22, observation):** only the kernel hook and
-  `tools/sweetmtl/out/SweetMTLDriver.bundle` are built. There is no Turnip /
+- **The driver over the bridge, and its test tool (2026-10-22, observation):**
+  the ObjC side of `tools/sweetmtl/` is now written. `SweetMTLDriver.h` (private
+  header), `SweetMTLDevice.m` (the class Metal instantiates: ICD choice
+  `SWEETMTL_ICD`, else `/usr/lib/sweetmtl/libvulkan_freedreno.dylib`, else
+  `…_lvp.dylib`; the stub rule; the MTLDevice methods), `SweetMTLObjects.m`
+  (MTLBuffer, MTLLibrary, MTLFunction, MTLComputePipelineState,
+  MTLCommandQueue, MTLCommandBuffer, MTLComputeCommandEncoder over the bridge's
+  handles) and `test/metal_compute.m` + `test/scale_and_offset.metal` (a normal
+  Metal client — `MTLCreateSystemDefaultDevice()`,
+  `newLibraryWithData:error:` — running the bridge C test's `scale_and_offset`
+  dispatch and checking `output[i] == 3i`, 1000 floats in 64-wide threadgroups).
+  The bridge's handle names collide with the class names in Objective-C's shared
+  C namespace (the bridge names them after the Metal classes), so the driver
+  `#define`s each to `…Handle` around its one include of `sweetmtl_bridge.h`;
+  the ABI is untouched. `build.sh` links the bridge staticlib *into* the bundle
+  (`$SWEETMTL_BRIDGE_ARTIFACT` = an unpacked CI artifact, else `bridge/out/`,
+  else a local `aarch64-apple-ios/release`), builds the tool and — where Xcode
+  has the Metal compiler — `out/scale_and_offset.metallib`, ad-hoc signs both;
+  `push.sh` installs bundle + tool + metallib + a staged
+  `libvulkan_freedreno.dylib` to `/usr/lib/sweetmtl/`. Every selector the bridge
+  does not cover is answered by one stub IMP installed from
+  `+resolveInstanceMethod:` after a single `sweetmtl: unimplemented -[Class sel]`
+  line (`-forwardingTargetForSelector:` cannot do it: the target must already
+  implement the selector); the wide-struct/double returns are explicit zeros for
+  the same reason. **Observed on this Mac** (`sh build.sh --host`, then
+  `SWEETMTL_DIRECT=out/SweetMTLDriver.bundle
+  SWEETMTL_ICD=/opt/homebrew/Cellar/mesa/26.0.2/lib/libvulkan_lvp.dylib
+  ./out/metal_compute out/scale_and_offset.metallib`): `sweetmtl:
+  initWithAcceleratorPort:0 pid …`, `sweetmtl: ICD …`, `sweetmtl: device:
+  llvmpipe (LLVM 22.1.0, 128 bits)`, `device: … (SweetMTLDevice)`, the
+  **metallib** loaded through `newLibraryWithData:error:` (a door the bridge's C
+  test never exercised), `pipeline: 1024 threads per threadgroup at most, SIMD
+  width 32`, the buffers with their `-contents` check, `setBuffer`,
+  `dispatchThreads:`, `endEncoding`, `commit`, then exit **139**: the same
+  SIGSEGV inside Lavapipe's *own* `libLLVM.dylib`
+  (`DAGTypeLegalizer::PromoteIntRes_Select`) the bridge's C test dies in, so the
+  read-back cannot be seen on this machine. `SWEETMTL_AIR=1` with
+  `out/scale_and_offset.air` (the driver's own AIR door) stops at the same
+  point. The stub path showed itself exactly once:
+  `sweetmtl: unimplemented -[SweetMTLLibrary functionNames]`. **Fact checked:**
+  iPhoneOS 27.0's `Metal.tbd` *does* list `MTLIOAccelDevice` under
+  `objc-classes` (as it lists all classes, without the `_OBJC_CLASS_$_`
+  prefix), so the superclass resolves on the device. **CI:** the workflow grew a
+  `driver` job (`needs: ios`, downloads `sweetmtl-bridge-ios`, runs `build.sh`
+  with `SWEETMTL_BRIDGE_ARTIFACT`, uploads `sweetmtl-driver-ios`) and its
+  `paths:` now covers `tools/sweetmtl/**`. Not done: the metallib path on the
+  phone, the `--host` build in CI (it needs a local `cargo build` of the bridge;
+  the self-check stays local), and any boot with the bundle + Turnip together.
+- **Pipeline status (2026-10-22, observation):** the kernel hook, the bridge
+  (`tools/sweetmtl/bridge/`) and `tools/sweetmtl/out/SweetMTLDriver.bundle`
+  (driver + bridge + tool, iphoneos arm64) are built. There is no Turnip /
   `libvulkan_freedreno.dylib`, no Turnip, no `libvulkan*` and no
   `sweetgl` anywhere; Mesa 23.1 + newer sources exist only in the session temp dir
   (`…/opencode/a6xx/`). That is the next build step.
 - Firmware, device dumps and serials stay out of git. Unfinished: hardware bring-up
   (levels 1 -> 8), then Turnip behind the client, then the Metal/`IOAcceleratorES`
-  bundle.
+  bundle end to end.
 
 ## >>> fajita branch (OnePlus 6T, SDM845), 2026-10-19 - read FAJITA.md first <<<
 - Branch `fajita` = upstream ios-sweet 11da58b + fajita shim/tools + kernel patches 0082-0084.
