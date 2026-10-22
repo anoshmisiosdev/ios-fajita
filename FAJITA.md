@@ -133,6 +133,7 @@ fastboot boot shim/out/shim-boot.img
 - **Start with `cpus=1`.** Raise to `cpus=8` once SpringBoard is up.
 - **`sweetusb=2`** brings up the USB Ethernet live log. `tools/sweet-usbnet.sh logs/boot.txt` on the PC shows the kernel console without filming the screen.
 - **`cs_enforcement_disable=1` and `sweetenv=…sweetgl.dylib`** are the code-signing bypass that lets `backboardd` load our own GL library; the GPU section explains how it works. The injection is a tolerated no-op until `/usr/lib/sweetgl.dylib` is installed on the phone.
+- **Testing the load path with no GPU:** `SWEETACCEL=1 ./fajita.sh phone` (leave `SWEETGPU=0`) publishes the `IOAcceleratorES` + `MetalPluginName` hook with no Adreno bring-up, so Metal loads `tools/sweetmtl` on its own. `SWEETACCEL=1 ./fajita.sh qemu-smoke` does the kernel half in QEMU (expect `SWEET GPU: IOAcceleratorES ...` on the console).
 - **After a hang,** boot recovery and run `tools/sweet-log-pull.sh logs/boot.txt`. It finds `userdata` by name.
 - **Touch starts 45 s after boot** (`sweettouchdelay`), so a hang there can't hide earlier logs.
 

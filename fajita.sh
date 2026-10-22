@@ -208,8 +208,10 @@ cmd_qemu_smoke() {
 	local d=$B/qemu-smoke
 	mkdir -p "$d"
 	python3 tools/mkadt.py "$d/q.adt" --qemu 2>/dev/null
+	local extra=""
+	[[ ${SWEETACCEL:-0} != 0 ]] && extra=" sweetaccel=1 sweetmtl=${SWEETMTL:-../../../usr/lib/sweetmtl/SweetMTLDriver} sweetmtlclass=${SWEETMTLCLASS:-SweetMTLDevice}"
 	python3 tools/mkpayload.py xnu/out/kernel.development.sweet "$d/q.adt" "$d/q.bin" \
-		--cmdline 'debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress fajita_dpu=0 sweettouch=0' >/dev/null
+		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress fajita_dpu=0 sweettouch=0$extra" >/dev/null
 	say "booting the kernel alone in QEMU for 60 s"
 	python3 tools/qemu-sweet.py "$d/q.bin" "$d/out" --secs 60 --accel "$(pick_accel)" || true
 	say "screen: build/qemu-smoke/out/fb.png (expect the console ending at 'Waiting on ... Apple_HFS')"
@@ -286,14 +288,21 @@ cmd_phone() {
 	[[ -f research/ipsw-x/d22ap.adt ]] || warn "no research/ipsw-x/d22ap.adt (run ./fajita.sh ipsw): iOS will not know it is an iPhone X"
 	mkdir -p shim/out
 	python3 tools/mkadt.py shim/out/fajita.adt --highmem
-	local gpu=${SWEETGPU:-0} blobs=()
+	local gpu=${SWEETGPU:-0} blobs=() accelargs=""
 	if [[ $gpu != 0 ]]; then
 		[[ -f $B/gpu-fw/a630_zap.mbn ]] || die "SWEETGPU=$gpu needs the GPU firmware: ./fajita.sh gpu-fw"
 		blobs=(--blob "GPU-SQE=$B/gpu-fw/a630_sqe.fw" --blob "GPU-GMU=$B/gpu-fw/a630_gmu.bin" --blob "GPU-ZAP=$B/gpu-fw/a630_zap.mbn")
 		say "GPU bring-up level sweetgpu=$gpu (firmware from build/gpu-fw)"
 	fi
+	# The IOAcceleratorES / Metal hook is independent of the GPU hardware:
+	# SWEETACCEL=1 (with SWEETGPU=0) publishes it so Metal loads tools/sweetmtl
+	# with no Adreno bring-up, to check the load path in isolation.
+	if [[ ${SWEETACCEL:-0} != 0 ]]; then
+		accelargs=" sweetaccel=1 sweetmtl=${SWEETMTL:-../../../usr/lib/sweetmtl/SweetMTLDriver} sweetmtlclass=${SWEETMTLCLASS:-SweetMTLDevice}"
+		say "IOAcceleratorES on, Metal plugin ${SWEETMTL:-../../../usr/lib/sweetmtl/SweetMTLDriver} (sweetgpu=$gpu)"
+	fi
 	python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/fajita.adt shim/out/payload.bin ${blobs[@]+"${blobs[@]}"} \
-		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetusb=2 sweetgpu=$gpu cs_enforcement_disable=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/lib/sweetgl.dylib" >/dev/null
+		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetusb=2 sweetgpu=$gpu cs_enforcement_disable=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/lib/sweetgl.dylib$accelargs" >/dev/null
 	shim/build.sh ../shim/out/payload.bin >/dev/null
 	say "phone boot image: shim/out/shim-boot.img"
 	cat <<-EOF
