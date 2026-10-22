@@ -1382,3 +1382,51 @@ index 18ef2f0..9c1f2d6 100644
  
  __startup_data static struct mach_vm_range io_range;
  static SECURITY_READ_ONLY_LATE(vm_map_t) io_submap;
+diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -1038,6 +1038,44 @@
+ 		printf("%s\n", line);
+ 	}
+ 	task_unlock(task);
++}
++
++/* The current thread's user frame-pointer backtrace, for one-off diagnostics. */
++void sweet_user_backtrace(const char *tag);
++
++void
++sweet_user_backtrace(const char *tag)
++{
++	thread_t thread = current_thread();
++	arm_saved_state_t *ss = find_user_regs(thread);
++	vm_map_t map = get_task_map(current_task());
++	vm_shared_region_t sr = vm_shared_region_get(current_task());
++	uint64_t slide = 0, fp;
++	char line[400];
++	int n;
++
++	if (sr != NULL) {
++		slide = sr->sr_slide;
++		vm_shared_region_deallocate(sr);
++	}
++	if (ss == NULL || !is_saved_state64(ss)) {
++		return;
++	}
++	fp = get_saved_state_fp(ss);
++	n = snprintf(line, sizeof(line), "UBT %s slide 0x%llx pc 0x%llx lr 0x%llx bt", tag, slide,
++	    get_saved_state_pc(ss), get_saved_state_lr(ss));
++	for (int i = 0; i < 24 && fp != 0 && (fp & 7) == 0 && n < (int)sizeof(line) - 20; i++) {
++		uint64_t frame[2];
++		if (vm_map_read_user(map, fp, frame, sizeof(frame)) != KERN_SUCCESS) {
++			break;
++		}
++		n += snprintf(line + n, sizeof(line) - n, " 0x%llx", frame[1]);
++		if (frame[0] <= fp) {
++			break;
++		}
++		fp = frame[0];
++	}
++	printf("%s\n", line);
+ }
+ 
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
