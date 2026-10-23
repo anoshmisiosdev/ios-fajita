@@ -340,7 +340,7 @@
   is what a phone run will be judged against.
 - **sweetvk build (2026-10-22, observation):** `sh build.sh` **succeeds end to
   end on this Mac** (Xcode 27.0 / iPhoneOS27.0 SDK, meson 1.11.1, ninja 1.13.2;
-  full log `…/opencode/sweetvk-build7.log`, 492 Mesa targets): the ICD is
+  full log `…/opencode/sweetvk-build7.log`, 493 Mesa targets): the ICD is
   `out/libvulkan_freedreno.dylib` **7 557 776 bytes**, `Mach-O 64-bit
   dynamically linked shared library arm64`, `vtool -show-build` = `platform IOS`,
   `minos 16.0`, `sdk 27.0`, install name `/usr/lib/sweetmtl/libvulkan_freedreno.dylib`,
@@ -403,7 +403,13 @@
   sync files (`drmPrimeHandleToFD`/`FDToHandle` = -1,
   `drmSyncobjHandleToFD`/`FDToHandle`/`Import`/`ExportSyncFile`/`Timeline*` =
   `-ENOSYS`, so no dma-buf/sync-file sharing and `DRM_CAP_SYNCOBJ_TIMELINE`
-  answers `-EINVAL` — Turnip uses the binary syncobj path, which *is* emulated);
+  answers `-EINVAL` — Turnip uses the binary syncobj path, which *is* emulated;
+  the two probes that decide that path are checked against Mesa's source and
+  both work: the `DRM_SYNCOBJ_CREATE_SIGNALED` syncobj that
+  `vk_drm_syncobj_get_type()` waits on with a zero timeout must come back
+  signalled (it does), and the pending-wait spin needs the zero-timeout
+  `drmSyncobjWait` to answer `-ETIME` for "not signalled yet", which it does —
+  an error there would be a `VK_ERROR_UNKNOWN` on the phone, not a spin);
   `MSM_INFO_SET_IOVA` (refused; the kernel picks IOVAs, which suits 23.1's
   hardcoded `has_set_iova = false`); `MSM_INFO_SET_NAME` (ignored);
   `SWEET_GPU_MAX_IBS` = 256, so big submits are chunked into several kernel
@@ -427,9 +433,24 @@
   bison 3.8.2/flex 2.6.4 are first on this Mac's PATH. Fixed in the workflow's
   Toolchain step: `brew install bison flex` (both keg-only) with their
   `$(brew --prefix …)/bin` appended to `$GITHUB_PATH`, so the build step meson
-  configures sees them. Re-run pending. The phone side is still untouched:
-  nothing is staged in `/usr/lib/sweetmtl/`, and the ICD has never been run
-  against SweetGPU or the A630.
+  configures sees them. The re-run, **39878616562 on `8451aa9`, SUCCESS** —
+  `ios` green in 1m26s (Toolchain 9s, *Build the ICD and the test* 68s
+  end-to-end: fetch 18 MB, extract, shim, configure, 493/493 targets, the
+  strict relink, sign, test), *The artifact is the device's* and *Stage*
+  green, artifact `sweetvk-ios` uploaded (1 738 185 bytes: the ICD,
+  `vk_compute`, `libsweetvk.a`, `SHA256SUMS`). Runner facts observed in that
+  log: meson 1.12.0, Xcode 15.4 (`clang 1500.3.9.4`, `iPhoneOS17.5.sdk`,
+  `-miphoneos-version-min=16.0`), bison 3.8.2 + flex from brew, no ccache; its
+  `check_unresolved` printed the same **3180 Mesa table symbols, nothing
+  else**. The uploaded artifact was downloaded here and re-checked
+  independently: `SHA256SUMS` verify, `Mach-O 64-bit … arm64`, `vtool` =
+  `platform IOS` `minos 16.0` `sdk 17.5`, ad-hoc signed, install name
+  `/usr/lib/sweetmtl/libvulkan_freedreno.dylib`, exactly the three `vk_icd*`
+  exports, and a macOS `dlopen()` refused on the platform. The runner's ICD is
+  **7 658 864 bytes** against 7 557 776 here: a different SDK (17.5 vs 27.0) and
+  clang, otherwise identical (same exports, same unresolved set). The phone side
+  is still untouched: nothing is staged in `/usr/lib/sweetmtl/`, and the ICD has
+  never been run against SweetGPU or the A630.
 - Firmware, device dumps and serials stay out of git. Unfinished: hardware bring-up
   (levels 1 -> 8), then Turnip behind the client, then the Metal/`IOAcceleratorES`
   bundle end to end.

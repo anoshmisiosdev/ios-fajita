@@ -183,6 +183,19 @@ The emulation logs what it refuses to stderr with a `sweetvk: ` prefix — on th
 phone that is the console, and it is the first place to look when something the
 real kernel answers shows up as a failure.
 
+Why those stubs are safe on the path Turnip 23.1 takes (verified against
+`src/vulkan/runtime/vk_drm_syncobj.c`): `vk_drm_syncobj_get_type()` creates a
+syncobj with `DRM_SYNCOBJ_CREATE_SIGNALED` and waits on it with a zero timeout,
+so that wait has to *succeed* — otherwise Turnip would not adopt
+`vk_drm_syncobj_wait_many`/`CPU_WAIT`/`WAIT_ANY` at all. The type always
+advertises `WAIT_PENDING`, and a pending wait on a type without
+`VK_SYNC_FEATURE_TIMELINE` goes to `spin_wait_for_sync_file()`, which first tries
+`drmSyncobjExportSyncFile` (our `-ENOSYS` is the expected fallback) and then a
+zero-timeout `drmSyncobjWait`, which must answer `-ETIME` — not an error — for
+"not signalled yet", or the wait would fail instead of spinning. That is also
+why `DRM_CAP_SYNCOBJ_TIMELINE` is answered `-EINVAL`: it is what keeps every wait
+off the stubbed `drmSyncobjTimelineWait`/`TimelineSignal`.
+
 `NOTES.md` lists the places where the kernel's `sweet_gpu.h` gives less than a
 real msm DRM would (fault counts, cache-coherent bos, fence fds, the extra
 `MSM_PARAM_*` values, …), i.e. what to add to the user client if a later
