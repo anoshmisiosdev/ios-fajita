@@ -1,0 +1,153 @@
+fajita: spin in delay(), check the UFS SMMU path
+
+Both from hardware observations by johnpanos/UniXNU-fajita (BSD-2-Clause-Patent):
+- d908d0f: on the OnePlus 6T a WFE-based delay poll never returned. delay()
+  now spins on the sweet boards; boot-arg sweetwfe=1 restores WFE.
+- d69aef9: the firmware leaves the UFS stream (0x100/0xf) on its own context
+  bank with translation off. sweet_ufs now logs that path before taking the
+  host, warns if the bank is 32-bit while the DMA is above 4 GiB
+  (mkadt.py --highmem), and with ufssmmu=2 sets VA64 on it. ufssmmu=0 skips.
+
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 64e3a45..2b96c49 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -354,6 +354,93 @@ ufs_find_partition(const char *want)
+ 	return ENOENT;
+ }
+ 
++/*
++ * The UFS host's DMA goes through the apps SMMU (fajita: MMU-500 at
++ * 0x15000000, UFS stream 0x100 mask 0xf, sdm845.dtsi). Observed on a 6T by
++ * johnpanos/UniXNU-fajita (d69aef9): the firmware leaves an SMR for exactly
++ * that stream on its own context bank with translation off, so physical
++ * addresses pass through. A bank without VA64 (CBA2R bit 0) still drops
++ * inputs above 32 bits (ARM IHI 0062D 1.6), and with mkadt.py --highmem all
++ * our DMA memory is above 4 GiB. Boot-arg ufssmmu: 0 skip, 1 (default) read
++ * and log only, 2 also set VA64 on that bank if it is needed and missing.
++ * ufssmmusid= / ufssmmumask= override the stream (another board).
++ */
++#define APPS_SMMU_PA    0x15000000u
++#define APPS_SMMU_SIZE  0x80000u
++
++static void
++smmu_wr(vm_offset_t base, uint32_t off, uint32_t v)
++{
++	/* Always through a register (never wzr): firmware may trap SMMU writes. */
++	__asm__ volatile("dmb sy\n\tstr %w0, [%1]\n\tdsb sy" : : "r"(v), "r"(base + off) : "memory");
++}
++
++static void
++ufs_smmu_check(void)
++{
++	uint32_t mode = 1, sid = 0x100, mask = 0xf;
++	PE_parse_boot_argn("ufssmmu", &mode, sizeof(mode));
++	PE_parse_boot_argn("ufssmmusid", &sid, sizeof(sid));
++	PE_parse_boot_argn("ufssmmumask", &mask, sizeof(mask));
++	if (mode == 0) {
++		return;
++	}
++	vm_offset_t smmu = ml_io_map(APPS_SMMU_PA, APPS_SMMU_SIZE);
++	if (smmu == 0) {
++		printf("SWEET UFS: SMMU: map failed\n");
++		return;
++	}
++	uint32_t cr0 = *(volatile uint32_t *)(smmu + 0x0);
++	uint32_t idr0 = *(volatile uint32_t *)(smmu + 0x20), idr1 = *(volatile uint32_t *)(smmu + 0x24);
++	uint32_t nsmr = idr0 & 0xff, ncb = idr1 & 0xff;
++	uint32_t pg = (idr1 >> 31) ? 0x10000u : 0x1000u;
++	uint32_t numpage = 1u << (((idr1 >> 28) & 7) + 1);
++	bool high = ((su.dma_pa + DMA_SIZE - 1) >> 32) != 0;
++	printf("SWEET UFS: SMMU sCR0 %08x IDR0 %08x IDR1 %08x (%u SMRs, %u banks), stream %#x/%#x, DMA %#llx%s\n",
++	    cr0, idr0, idr1, nsmr, ncb, sid, mask, su.dma_pa, high ? " (above 4 GiB)" : "");
++	if ((uint64_t)numpage * pg * 2 > APPS_SMMU_SIZE || nsmr > 128) {
++		printf("SWEET UFS: SMMU: unexpected geometry, not looking further\n");
++		return;
++	}
++	unsigned found = 0;
++	for (uint32_t i = 0; i < nsmr; i++) {
++		uint32_t smr = *(volatile uint32_t *)(smmu + 0x800 + 4 * i);
++		uint32_t smask = (smr >> 16) & 0x7fff;
++		if (!(smr >> 31) || ((smr ^ sid) & 0xffff & ~(smask | mask))) {
++			continue;
++		}
++		found++;
++		uint32_t s2cr = *(volatile uint32_t *)(smmu + 0xc00 + 4 * i);
++		uint32_t type = (s2cr >> 16) & 3, cb = s2cr & 0xff;
++		if (type != 0 || cb >= ncb) {
++			printf("SWEET UFS: SMMU SMR%u %08x S2CR %08x: %s\n", i, smr, s2cr,
++			    type == 1 ? "bypass (physical addresses pass)" : type == 2 ? "FAULT: UFS DMA will be dropped" : "unexpected");
++			continue;
++		}
++		vm_offset_t cbr = smmu + (vm_offset_t)(numpage + cb) * pg;
++		uint32_t sctlr = *(volatile uint32_t *)cbr;
++		uint32_t cba2r = *(volatile uint32_t *)(smmu + pg + 0x800 + 4 * cb);
++		printf("SWEET UFS: SMMU SMR%u %08x S2CR %08x -> CB%u SCTLR %08x CBA2R %08x\n", i, smr, s2cr, cb, sctlr, cba2r);
++		if (sctlr & 1) {
++			printf("SWEET UFS: SMMU: CB%u translates; physical DMA addresses will not work\n", cb);
++			continue;
++		}
++		if (high && !(cba2r & 1)) {
++			if (mode < 2) {
++				printf("SWEET UFS: SMMU: CB%u is 32-bit and the DMA is above 4 GiB: boot with ufssmmu=2 to set VA64\n", cb);
++				continue;
++			}
++			smmu_wr(smmu, pg + 0x800 + 4 * cb, cba2r | 1);
++			printf("SWEET UFS: SMMU: CB%u VA64 set: CBA2R now %08x\n", cb,
++			    *(volatile uint32_t *)(smmu + pg + 0x800 + 4 * cb));
++		}
++	}
++	if (!found) {
++		printf("SWEET UFS: SMMU: no SMR for stream %#x; unmatched streams %s (sCR0.USFCFG)\n",
++		    sid, (cr0 & (1u << 10)) ? "FAULT" : "bypass");
++	}
++}
++
+ static int
+ ufs_take_over_host(void)
+ {
+@@ -622,6 +709,7 @@ sweet_ufs_init(void)
+ 	su.lun = 0;
+ 	su.secsize = DEV_BSIZE;
+ 
++	ufs_smmu_check();
+ 	lck_mtx_lock(&sweet_ufs_lock);
+ 	error = ufs_take_over_host();
+ 	if (!error) {
+diff --git a/osfmk/arm/rtclock.c b/osfmk/arm/rtclock.c
+index 5989b48..b291a17 100644
+--- a/osfmk/arm/rtclock.c
++++ b/osfmk/arm/rtclock.c
+@@ -50,6 +50,7 @@
+ #include <machine/commpage.h>
+ #include <machine/machine_routines.h>
+ #include <machine/config.h>
++#include <pexpert/pexpert.h>
+ #include <arm/exception.h>
+ #include <arm/cpu_data_internal.h>
+ #if __arm64__
+@@ -522,6 +523,24 @@ machine_delay_until(uint64_t interval,
+ #pragma unused(interval)
+ 	uint64_t now;
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * Spin instead of WFE unless boot-arg sweetwfe=1. On the OnePlus 6T
++	 * (SDM845) a WFE-based poll never returned in UniXNU-fajita's kernel
++	 * (johnpanos/UniXNU-fajita d908d0f, UFS NOP OUT poll): nothing woke the
++	 * core. A spin costs power during delay() only; lock waits keep WFE.
++	 */
++	static int sweet_wfe = -1;
++	if (sweet_wfe < 0) {
++		int v = 0;
++		sweet_wfe = (PE_parse_boot_argn("sweetwfe", &v, sizeof(v)) && v == 1) ? 1 : 0;
++	}
++	if (!sweet_wfe) {
++		while (mach_absolute_time() < deadline) {
++		}
++		return;
++	}
++#endif
+ 	do {
+ 		__builtin_arm_wfe();
+ 		now = mach_absolute_time();

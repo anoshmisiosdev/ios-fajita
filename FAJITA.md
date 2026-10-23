@@ -137,6 +137,26 @@ fastboot boot shim/out/shim-boot.img
 - **After a hang,** boot recovery and run `tools/sweet-log-pull.sh logs/boot.txt`. It finds `userdata` by name.
 - **Touch starts 45 s after boot** (`sweettouchdelay`), so a hang there can't hide earlier logs.
 
+## What UniXNU-fajita found on real hardware
+
+[johnpanos/UniXNU-fajita](https://github.com/johnpanos/UniXNU-fajita) (UniXNU's 6T port, BSD-2-Clause-Patent; iPadOS 17.7.11 on XNU 23.6, booted through Mu-Silicium UEFI) has run XNU on a 6T: CPU, GIC, timer, IOKit, APFS, UFS root, launchd. Nothing here has booted on the phone yet, so their observations are the best evidence we have. Credit to them for all of it.
+
+| Their observation (6T, 2026-10-21/22) | What it means here |
+| --- | --- |
+| Header v0 boot images load; v1 was refused | `shim/build.sh` already makes v0 |
+| ABL answers `Load Error` once the active slot is unbootable; every reset spends a retry | if `fastboot boot` starts failing, run `fastboot set_active b` (or `a`) first |
+| ABL refuses large ramdisks (their payload is a 64 MiB+ volume) | ours is ~17 MB; if refused, append the payload to the Image instead (Review item 1) |
+| Virtual timer is INTID 19 | `mkadt.py` already uses 19 |
+| ABL leaves the APSS watchdog (0x17980000) disabled | nothing to pet |
+| Restart reason IMEM is `0x146bf65c` (`0x77665500` = reboot to the bootloader) | matches what the review found |
+| Splash `0x9d400000`, 1080x2340 | matches `shim/` and `mkadt.py` |
+| A WFE-based `delay()` poll never returned (d908d0f) | patch 0088: `delay()` spins; `sweetwfe=1` restores WFE |
+| UFS DMA passes through the apps SMMU on a firmware bank with translation off, stream 0x100/0xf (d69aef9) | patch 0088 logs it; if that bank is 32-bit and our DMA is above 4 GiB, boot with `ufssmmu=2` |
+| 3 GiB ran out of memory 2 minutes into iPadOS 17 | iOS 16 targets the iPhone X's 3 GiB, so `--highmem`'s 3 GiB should do; raise with `--mem-size` if jetsam kills things |
+| The ABL stamps a protective MBR (0xEE) on userdata's first sector | harmless for our HFS+ root (its header starts at byte 1024) |
+
+UniXNU-fajita plans to move to iOS 16.7 later; their notes (`NOTES-ios16.md`) cite the ios-sweet kernel series for it.
+
 ## GPU (Adreno 630), branch `fajita-gpu`: work in progress
 
 The approach and most of the plumbing come from [joranv1/ios-sailfish](https://github.com/joranv1/ios-sailfish), which brought up the Adreno 530 on the Pixel 1. Credit for the design goes to them: the SweetGPU IOKit user client, the `sweet_gpu.h` kernel API, the IOSurface fixes, `sweetenv` dylib injection, and Mesa freedreno running behind an `IOAcceleratorES` service. Patch `0085-fajita-gpu-plumbing.patch` carries that plumbing unchanged, plus a read-only cmd-db lookup for the GMU (`sweet_rpmh_cmd_db_aux`).
