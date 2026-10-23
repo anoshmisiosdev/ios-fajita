@@ -337,7 +337,16 @@
   for gallium, extended here for Turnip: A630 GPU id, the client VA window, the
   UAPI 1.7 submit shape, `MSM_INFO_SET_IOVA` refused, syncobjs. Ported from
   joranv1/ios-sailfish. `tools/sweetvk/README.md` is the reference; what follows
-  is what a phone run will be judged against.
+  is what a phone run will be judged against. Coverage check against the source:
+  every libdrm entry point Turnip's msm backend and `vk_drm_syncobj.c` reference
+  is answered (`drmOpenWithType` → a `/dev/null` dup when SweetGPU is there,
+  `drmGetVersion` → `msm 1.7.0`, `drmIoctl`/`drmCommandWrite[Read]` → the msm
+  ioctls GEM_NEW/CLOSE/INFO/MADVISE/CPU_PREP/CPU_FINI/SUBMIT/WAIT_FENCE/GET_PARAM/
+  SET_PARAM/SUBMITQUEUE_NEW/CLOSE/QUERY, `drmGetCap`, the `drmSyncobj*` set,
+  `sweet_drm_bo_map` for `os_mmap`), with `-EINVAL` + a log for anything else.
+  `DRM_IOCTL_GEM_FLINK`/`GEM_OPEN` land in that fallback but nothing in Turnip's
+  Vulkan code calls `fd_bo_get_name`/`fd_bo_from_name` (checked), so they are
+  unreachable.
 - **sweetvk build (2026-10-22, observation):** `sh build.sh` **succeeds end to
   end on this Mac** (Xcode 27.0 / iPhoneOS27.0 SDK, meson 1.11.1, ninja 1.13.2;
   full log `…/opencode/sweetvk-build7.log`, 493 Mesa targets): the ICD is
