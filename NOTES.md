@@ -321,10 +321,98 @@
   29b16110…de28d1f) for iphoneos and uploaded them in `sweetmtl-driver-ios`.
 - **Pipeline status (2026-10-22, observation):** the kernel hook, the bridge
   (`tools/sweetmtl/bridge/`) and `tools/sweetmtl/out/SweetMTLDriver.bundle`
-  (driver + bridge + tool, iphoneos arm64) are built. There is no Turnip /
-  `libvulkan_freedreno.dylib`, no Turnip, no `libvulkan*` and no
-  `sweetgl` anywhere; Mesa 23.1 + newer sources exist only in the session temp dir
-  (`…/opencode/a6xx/`). That is the next build step.
+  (driver + bridge + tool, iphoneos arm64) are built, and so is Turnip
+  (`tools/sweetvk/out/libvulkan_freedreno.dylib`, the next bullet). There is
+  still no `sweetgl`/`libvulkan*` staged on the phone and nothing has been run
+  there: Mesa 23.1 sources otherwise exist only in the session temp dir
+  (`…/opencode/a6xx/`).
+- **Turnip for iOS (`tools/sweetvk`, 2026-10-22, observation):** Mesa **23.1.9**
+  (last 23.1 release, `archive.mesa3d.org`, 18 589 464 bytes, verified) built
+  for `aarch64-apple-ios` with `-Dvulkan-drivers=freedreno
+  -Dgallium-drivers= -Dllvm=disabled -Dfreedreno-kmds=msm`, no window system.
+  libdrm does not exist for iOS, so `include/xf86drm.h` replaces it and
+  `sweet_drm.c` answers the msm ioctls over the SweetGPU user client (selectors
+  10-16: `GEM_NEW/CLOSE`, `INFO GET_OFFSET/GET_IOVA`, `SUBMIT`, `WAIT`, GET_PARAM,
+  CPU_PREP) — the same emulation ios-sailfish's `tools/sweetgl/sweet_drm.c` does
+  for gallium, extended here for Turnip: A630 GPU id, the client VA window, the
+  UAPI 1.7 submit shape, `MSM_INFO_SET_IOVA` refused, syncobjs. Ported from
+  joranv1/ios-sailfish. `tools/sweetvk/README.md` is the reference; what follows
+  is what a phone run will be judged against.
+- **sweetvk build (2026-10-22, observation):** `sh build.sh` **succeeds end to
+  end on this Mac** (Xcode 27.0 / iPhoneOS27.0 SDK, meson 1.11.1, ninja 1.13.2;
+  full log `…/opencode/sweetvk-build7.log`, 492 Mesa targets): the ICD is
+  `out/libvulkan_freedreno.dylib` **7 557 776 bytes**, `Mach-O 64-bit
+  dynamically linked shared library arm64`, `vtool -show-build` = `platform IOS`,
+  `minos 16.0`, `sdk 27.0`, install name `/usr/lib/sweetmtl/libvulkan_freedreno.dylib`,
+  ad-hoc signed (`flags=0x2(adhoc)`), exporting exactly
+  `_vk_icdGetInstanceProcAddr`, `_vk_icdGetPhysicalDeviceProcAddr`,
+  `_vk_icdNegotiateLoaderICDInterfaceVersion` (what `tools/sweetmtl`'s bridge
+  `dlsym()`s; its `SweetMTLPickICD` already looks for that path). The test is
+  `out/vk_compute` (50 560 bytes). Only the *building* of the test is provable
+  here; it can only pass on the phone (its only transport is SweetGPU).
+- **sweetvk's three Mesa hunks (`mesa.patch`, observation):** (1)
+  `__APPLE__` `os_mmap`/`os_munmap` in `freedreno_bo.c` become
+  `sweet_drm_bo_map()` — no DRM to mmap, the kernel already mapped the bo, and
+  the "mmap offset" is its GEM handle; (2) `-Wl,-undefined,dynamic_lookup` on
+  the *ICD target's* `link_args` (`src/freedreno/vulkan/meson.build`); (3)
+  `src/vulkan/runtime/meson.build` compiles `vk_drm_syncobj.c` even though
+  `dep_libdrm` is not found, because `tu_knl_drm_msm_load()` calls
+  `vk_drm_syncobj_get_type()` while creating the device. Everything else is
+  shims (`include/sweet_compat.h` force-included, `compat.c`).
+- **The `dynamic_lookup` caveat and the guard (2026-10-22, observation):**
+  Linux resolves Mesa's weak entrypoint tables to NULL; ld64 refuses to write a
+  dylib with weak references to symbols no library provides unless
+  `-undefined dynamic_lookup` lets dyld bind them to 0. That flag **must not
+  live in the cross file**: meson passes cross-file link args to its
+  `has_function()` probes, so every "is this symbol there?" probe then links and
+  answers yes — proven by `HAVE_MEMFD_CREATE` appearing (`anon_file.c` then hit
+  undefined `MFD_CLOEXEC`, meson-log shows the probe command line carrying the
+  flag). Hence hunk 2. The cost of the flag is that it also hides a symbol *we*
+  forgot, so `build.sh`'s `check_unresolved()` relinks the same command without
+  it: ld then refuses references from exactly four generated tables and nothing
+  else (**3180** symbols: `tu_entrypoints` 1408, `vk_cmd_enqueue` 794,
+  `wsi_common` 570, `vk_common` 408), and any reference from another object
+  fails the build. It caught both real bugs of this port: our shim's
+  declarations were not `extern "C"`, so C++ TUs (`tu_knl_drm_msm.cc`,
+  `tu_device.cc`) referenced mangled `drm*`/`sysinfo` names (ld: "declaration
+  possibly missing 'extern \"C\"'") — the ICD would have failed to `dlopen()`
+  on the phone; and `vk_drm_syncobj.c` was missing as above.
+- **Mesa 23.1.9's absent `tu_*` entrypoints are by design (observation, from
+  source):** `tu_QueueSubmit`, `tu_CreateFence`, `tu_ResetFences`,
+  `tu_CmdDispatch` … are declared weak in the generated header and never defined
+  in 23.1.9; their table entries stay NULL and the Vulkan runtime's
+  `vk_common_*` implements the entry point (e.g. `tu_device.cc:1729` sets
+  `queue->vk.driver_submit = tu_queue_submit` and `vk_common_QueueSubmit`
+  (`vk_synchronization2.c:287`) / `vk_common_QueueSubmit2KHR` (`vk_queue.c:1136`)
+  do the work). The per-chip `tu_*<A6XX>`/`<(chip)6|7>` specialisations are
+  likewise declared but never instantiated in 23.1.9. So a large unresolved set
+  is *not* a symptom here; what matters is that nothing but those tables is
+  unresolved, which is what the guard checks.
+- **What the kernel does not give Turnip (`sweet_gpu.h`, observation + gaps to
+  add there if a later Mesa needs them):** `sweet_gpu_get_info` supplies chip id,
+  GMEM base/size and max frequency, and the client GVA window is known — the
+  emulation therefore hardcodes/derives the rest. Missing or emulated as a
+  constant: fault and suspend counters (`MSM_PARAM_FAULTS`/`SUSPENDS` = 0);
+  a real GPU timestamp (`MSM_PARAM_TIMESTAMP` is `mach_absolute_time()`, units
+  unproven, so autotuning timings are not trustworthy); submitqueue priorities
+  (1); `MSM_PARAM_HIGHEST_BANK_BIT`, `MSM_PARAM_UBWC_SWIZZLE`,
+  `MSM_PARAM_MACROTILE_MODE` (23.1 does not ask; later Mesa does);
+  `MSM_BO_CACHED_COHERENT` (UAPI 1.8; refused as we emulate 1.7); fence fds and
+  sync files (`drmPrimeHandleToFD`/`FDToHandle` = -1,
+  `drmSyncobjHandleToFD`/`FDToHandle`/`Import`/`ExportSyncFile`/`Timeline*` =
+  `-ENOSYS`, so no dma-buf/sync-file sharing and `DRM_CAP_SYNCOBJ_TIMELINE`
+  answers `-EINVAL` — Turnip uses the binary syncobj path, which *is* emulated);
+  `MSM_INFO_SET_IOVA` (refused; the kernel picks IOVAs, which suits 23.1's
+  hardcoded `has_set_iova = false`); `MSM_INFO_SET_NAME` (ignored);
+  `SWEET_GPU_MAX_IBS` = 256, so big submits are chunked into several kernel
+  submits in order.
+- **sweetvk CI (2026-10-22):** `.github/workflows/sweetvk.yml` (new) builds it on
+  `macos-14` (`brew install meson ninja`, `sh build.sh`), checks the artifact is
+  the device's (`file`, `vtool -show-build` = `platform IOS`, ad-hoc signature,
+  install name, the three exports by diff) and uploads `out/`. Run ID to be
+  filled in when this push's CI is watched. The phone side is still untouched:
+  nothing is staged in `/usr/lib/sweetmtl/`, and the ICD has never been run
+  against SweetGPU or the A630.
 - Firmware, device dumps and serials stay out of git. Unfinished: hardware bring-up
   (levels 1 -> 8), then Turnip behind the client, then the Metal/`IOAcceleratorES`
   bundle end to end.

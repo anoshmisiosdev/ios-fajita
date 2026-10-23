@@ -1,0 +1,50 @@
+# Mesa cross file for iOS 16 arm64, Turnip only. build.sh substitutes the
+# placeholders below (the SDK and toolchain paths xcrun answers on this machine,
+# this checkout's include/ and out/libsweetvk.a) into build/ios-cross.txt; this
+# template is the committed part. Shape from joranv1/ios-sailfish's
+# tools/sweetgl/ios-cross.txt.
+
+[binaries]
+c = [@CC@, '-arch', 'arm64', '-isysroot', @SDK@, '-miphoneos-version-min=@MINVER@']
+cpp = [@CXX@, '-arch', 'arm64', '-isysroot', @SDK@, '-miphoneos-version-min=@MINVER@']
+objc = [@CC@, '-arch', 'arm64', '-isysroot', @SDK@, '-miphoneos-version-min=@MINVER@']
+ar = @AR@
+strip = @STRIP@
+# No pkg-config for the device SDK: every dependency is either bundled in Mesa
+# or switched off in setup-mesa.sh.
+pkg-config = 'false'
+
+[properties]
+# sweet_compat.h (below) pulls <time.h> into every translation unit, which
+# upsets meson's one *unprefixed* has_function() probe: its template declares
+# 'char clock_gettime(void);' itself on purpose, so a real prototype already
+# being visible turns the probe into a compile error and clock_gettime comes
+# back missing - which then makes Mesa require the -lrt that iOS has not got.
+# Meson takes has_function_* properties as the answer to such a probe, so give
+# it the true one. (Mesa's other probes either pass a prefix or are not upset
+# by the header, so they do not need this.)
+has_function_clock_gettime = true
+
+[built-in options]
+# <xf86drm.h> and the rest of the msm emulation's interface resolve here
+# instead of against a libdrm that does not exist for iOS. sweet_compat.h is
+# forced into every translation unit because it declares calls Mesa makes that
+# the macOS SDK has not got (see include/sweet_compat.h, compat.c).
+c_args = ['-I@SHIM_INC@', '-include', '@SHIM_INC@/sweet_compat.h']
+cpp_args = ['-I@SHIM_INC@', '-include', '@SHIM_INC@/sweet_compat.h']
+# Mesa's own link command builds libvulkan_freedreno (the ICD); the msm
+# emulation is a plain user-space library, so it is force-loaded into that
+# link, together with the frameworks it calls. The -Wl,-undefined,dynamic_lookup
+# that same link needs (Mesa's weak wsi_*/tu_*<A6XX> entrypoint references are
+# meant to be absent) is added to that target by mesa.patch, not here: meson
+# hands these link args to its feature probes as well, and a missing symbol then
+# links and looks present. build.sh's gen_cross has the details.
+c_link_args = @LINK_ARGS@
+cpp_link_args = @LINK_ARGS@
+
+[host_machine]
+system = 'darwin'
+subsystem = 'ios'
+cpu_family = 'aarch64'
+cpu = 'arm64'
+endian = 'little'

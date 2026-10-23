@@ -155,7 +155,7 @@ SWEETGPU=1 ./fajita.sh phone    # boot image with the blobs + sweetgpu=1
 
 Bring-up levels for `sweetgpu=` (0 = off, the default): 1 clocks and power + GPU id, 2 adds IOMMU + GMU + HFI, 3 adds the command processor + zap shader + a self-test, 8 is service mode for the userland. Step up one level per boot; after a hang, the UFS log shows the last stage reached.
 
-After the kernel driver: Turnip (Mesa's Vulkan driver) on the same interface, then a Metal driver bundle on top of Vulkan, registered through `IOAcceleratorES` `MetalPluginName` (scaffolded in `tools/sweetmtl`, see below).
+After the kernel driver: Turnip (Mesa's Vulkan driver) on the same interface, then a Metal driver bundle on top of Vulkan, registered through `IOAcceleratorES` `MetalPluginName` (scaffolded in `tools/sweetmtl`, see below). Turnip now builds for iOS in `tools/sweetvk/` (`libvulkan_freedreno.dylib`, Mesa 23.1.9 with the msm ioctls emulated over the SweetGPU user client, plus a CLI compute test); it is built and checked on CI, and has never been run on the phone. See `tools/sweetvk/README.md` and NOTES.md.
 
 ### Loading the userland driver: how an outside bundle gets in
 

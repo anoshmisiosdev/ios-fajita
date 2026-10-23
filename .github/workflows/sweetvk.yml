@@ -1,0 +1,83 @@
+name: sweetvk
+
+# Mesa Turnip (libvulkan_freedreno.dylib) for iOS and its CLI test, built for the device here:
+# a change that only compiles with the host SDK still fails this build. The build fetches Mesa
+# 23.1.9 from archive.mesa3d.org and configures it for the iPhoneOS SDK the runner has, so the
+# runner needs nothing but Xcode, meson and ninja.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, fajita-gpu]
+    paths:
+      - "tools/sweetvk/**"
+      # …but not the prose: a README/NOTES edit under tools/sweetvk/ does not need a Mesa build.
+      - "!tools/sweetvk/*.md"
+      - "!tools/sweetvk/**/*.md"
+      - ".github/workflows/sweetvk.yml"
+  pull_request:
+    paths:
+      - "tools/sweetvk/**"
+      - "!tools/sweetvk/*.md"
+      - "!tools/sweetvk/**/*.md"
+
+concurrency:
+  group: sweetvk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-14
+    # ~10 min for Mesa's 492 targets on a cold runner, plus configure and the strict relink check.
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: tools/sweetvk
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          brew list meson >/dev/null 2>&1 || brew install meson ninja
+          meson --version
+          ninja --version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Build the ICD and the test
+        # build.sh generates the cross file from the SDK xcrun finds, compiles the msm emulation
+        # (sweet_drm.c) into out/libsweetvk.a, fetches/patches/configures Mesa 23.1.9, ninja-links
+        # the ICD, checks its exports and relinks once without -undefined dynamic_lookup to prove
+        # that the only unresolved references are Mesa's own weak entrypoint tables (see README).
+        run: sh build.sh
+
+      - name: The artifact is the device's
+        run: |
+          set -e
+          file out/libvulkan_freedreno.dylib out/vk_compute
+          xcrun vtool -show-build out/libvulkan_freedreno.dylib
+          xcrun vtool -show-build out/libvulkan_freedreno.dylib | grep -q "platform IOS"
+          codesign -dv out/libvulkan_freedreno.dylib 2>&1 | grep -qi "adhoc"
+          otool -D out/libvulkan_freedreno.dylib | tail -1 | grep -q "/usr/lib/sweetmtl/libvulkan_freedreno.dylib"
+          # The bridge (tools/sweetmtl) dlsym()s exactly these three out of a bare Mesa ICD.
+          nm -gU out/libvulkan_freedreno.dylib | awk '{print $NF}' | grep '^_vk' | sort > /tmp/exports
+          printf '_vk_icdGetInstanceProcAddr\n_vk_icdGetPhysicalDeviceProcAddr\n_vk_icdNegotiateLoaderICDInterfaceVersion\n' > /tmp/want
+          diff -u /tmp/want /tmp/exports
+
+      - name: Stage
+        run: |
+          shasum -a 256 out/* > out/SHA256SUMS
+          ls -la out
+          cat out/SHA256SUMS
+
+      - name: What ld refused, if the check failed
+        if: failure()
+        run: |
+          for f in build/mesa-ios/strict-check.log build/mesa-ios/strict-check.sh \
+                   build/mesa-ios/meson-logs/meson-log.txt; do
+            if [ -f "$f" ]; then echo "=== $f"; tail -150 "$f"; fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sweetvk-ios
+          path: tools/sweetvk/out/
+          if-no-files-found: error

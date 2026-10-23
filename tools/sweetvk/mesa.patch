@@ -1,0 +1,74 @@
+diff --git a/src/freedreno/drm/freedreno_bo.c b/src/freedreno/drm/freedreno_bo.c
+index 3f15f52..8252ae1 100644
+--- a/src/freedreno/drm/freedreno_bo.c
++++ b/src/freedreno/drm/freedreno_bo.c
+@@ -29,6 +29,20 @@
+ #include "freedreno_drmif.h"
+ #include "freedreno_priv.h"
+ 
++#if defined(__APPLE__)
++/* tools/sweetvk: there is no DRM to mmap on iOS. The bo's memory is already
++ * mapped into the process by the SweetGPU kernel (selector 10, bo new): the
++ * "mmap offset" freedreno passes around is the GEM handle (see sweet_drm.c,
++ * MSM_INFO_GET_OFFSET), and sweet_drm_bo_map() turns it back into the mapping
++ * the kernel made. os_munmap() has nothing to undo - the mapping belongs to
++ * the kernel. */
++void *sweet_drm_bo_map(int fd, uint64_t offset);
++#undef os_mmap
++#undef os_munmap
++#define os_mmap(addr, length, prot, flags, fd, offset) sweet_drm_bo_map(fd, offset)
++#define os_munmap(addr, length) 0
++#endif
++
+ simple_mtx_t table_lock = SIMPLE_MTX_INITIALIZER;
+ simple_mtx_t fence_lock = SIMPLE_MTX_INITIALIZER;
+ 
+diff --git a/src/freedreno/vulkan/meson.build b/src/freedreno/vulkan/meson.build
+--- a/src/freedreno/vulkan/meson.build
++++ b/src/freedreno/vulkan/meson.build
+@@ -165,7 +165,23 @@ libvulkan_freedreno = shared_library(
+   c_args : [no_override_init_args, tu_flags],
+   cpp_args : [tu_cpp_args, tu_flags],
+   gnu_symbol_visibility : 'hidden',
+-  link_args : [vulkan_icd_link_args, ld_args_bsymbolic, ld_args_gc_sections, ld_args_build_id],
++  # tools/sweetvk: Mesa's entrypoint tables (vk_entrypoints_gen.py) hold the
++  # addresses of functions that are declared weak and *meant* to be missing:
++  # the wsi_* ones this driver has no window system for, and the per-chip
++  # tu_*<A6XX> specialisations Mesa 23.1 declares but never instantiates.
++  # Linux resolves those to NULL, which is what the dispatch-table layering
++  # expects; ld64 will not link a dylib whose weak references to symbols no
++  # library provides are undefined unless it may leave them to dyld, which
++  # binds them to NULL just the same. (Not a cross file link arg: meson passes
++  # those to its feature probes too, where the flag makes every missing-symbol
++  # check answer yes - HAVE_MEMFD_CREATE, for one.)
++  link_args : [
++    vulkan_icd_link_args,
++    ld_args_bsymbolic,
++    ld_args_gc_sections,
++    ld_args_build_id,
++    host_machine.system() == 'darwin' ? '-Wl,-undefined,dynamic_lookup' : [],
++  ],
+   link_depends : vulkan_icd_link_depends,
+   install : true,
+ )
+diff --git a/src/vulkan/runtime/meson.build b/src/vulkan/runtime/meson.build
+--- a/src/vulkan/runtime/meson.build
++++ b/src/vulkan/runtime/meson.build
+@@ -109,10 +109,15 @@ vulkan_runtime_deps = [
+   idep_vulkan_util,
+ ]
+ 
+-if dep_libdrm.found()
++# tools/sweetvk: this file is Mesa's drm syncobj vk_sync type. There is no
++# libdrm for iOS to find, but tools/sweetvk's shim answers those drm* entry
++# points over the SweetGPU user client, and freedreno's msm backend calls in
++# here at device load (tu_knl_drm_msm_load -> vk_drm_syncobj_get_type), so
++# compile it for the msm KMD as well.
++if dep_libdrm.found() or (host_machine.system() == 'darwin' and freedreno_kmds.contains('msm'))
+   vulkan_runtime_files += files('vk_drm_syncobj.c', 'vk_drm_syncobj.h')
+   vulkan_runtime_deps += dep_libdrm
+ endif
+ 
+ if with_platform_android
+   vulkan_runtime_files += files('vk_android.c', 'vk_android.h')
+ 

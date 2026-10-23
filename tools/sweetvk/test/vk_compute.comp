@@ -1,0 +1,21 @@
+#version 450
+/* tools/sweetvk: the compute shader test/vk_compute.c dispatches, 64
+ * invocations of out.x[i] = in.x[i] * 2 + 1 (see the SPIR-V array there).
+ * Generates test/vk_compute.spv with:
+ *   glslangValidator -V --target-env vulkan1.1 -o vk_compute.spv vk_compute.comp
+ * and the words in the test come from that file (spirv-val clean). */
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer In {
+    uint x[];
+} inb;
+
+layout(set = 0, binding = 1, std430) writeonly buffer Out {
+    uint x[];
+} outb;
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    outb.x[i] = inb.x[i] * 2u + 1u;
+}

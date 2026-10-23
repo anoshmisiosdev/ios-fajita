@@ -1,0 +1,4 @@
+# Mesa source, its build directory and the cross file (setup-mesa.sh)
+build/
+# the dylib, the shim archive and the test binaries (build.sh)
+out/
