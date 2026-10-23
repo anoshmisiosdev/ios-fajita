@@ -151,7 +151,7 @@ fastboot boot shim/out/shim-boot.img
 | Restart reason IMEM is `0x146bf65c` (`0x77665500` = reboot to the bootloader) | matches what the review found |
 | Splash `0x9d400000`, 1080x2340 | matches `shim/` and `mkadt.py` |
 | A WFE-based `delay()` poll never returned (d908d0f) | patch 0088: `delay()` spins; `sweetwfe=1` restores WFE |
-| UFS DMA passes through the apps SMMU on a firmware bank with translation off, stream 0x100/0xf (d69aef9) | patch 0088 logs it; if that bank is 32-bit and our DMA is above 4 GiB, boot with `ufssmmu=2` |
+| UFS DMA passes through the apps SMMU on a firmware bank with translation off, stream 0x100/0xf (d69aef9) | patch 0088 logs it and, if that bank is 32-bit while our DMA is above 4 GiB, sets it to 64-bit (VA64) automatically; `ufssmmu=1` only logs |
 | 3 GiB ran out of memory 2 minutes into iPadOS 17 | iOS 16 targets the iPhone X's 3 GiB, so `--highmem`'s 3 GiB should do; raise with `--mem-size` if jetsam kills things |
 | The ABL stamps a protective MBR (0xEE) on userdata's first sector | harmless for our HFS+ root (its header starts at byte 1024) |
 

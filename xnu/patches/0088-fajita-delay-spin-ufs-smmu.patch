@@ -5,14 +5,14 @@ Both from hardware observations by johnpanos/UniXNU-fajita (BSD-2-Clause-Patent)
   now spins on the sweet boards; boot-arg sweetwfe=1 restores WFE.
 - d69aef9: the firmware leaves the UFS stream (0x100/0xf) on its own context
   bank with translation off. sweet_ufs now logs that path before taking the
-  host, warns if the bank is 32-bit while the DMA is above 4 GiB
-  (mkadt.py --highmem), and with ufssmmu=2 sets VA64 on it. ufssmmu=0 skips.
+  host and, if the bank is 32-bit while the DMA is above 4 GiB
+  (mkadt.py --highmem), sets VA64 on it. ufssmmu=1 only logs, ufssmmu=0 skips.
 
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
-index 64e3a45..2b96c49 100644
+index 64e3a45..606d255 100644
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -354,6 +354,93 @@ ufs_find_partition(const char *want)
+@@ -354,6 +354,94 @@ ufs_find_partition(const char *want)
  	return ENOENT;
  }
  
@@ -23,8 +23,9 @@ index 64e3a45..2b96c49 100644
 + * that stream on its own context bank with translation off, so physical
 + * addresses pass through. A bank without VA64 (CBA2R bit 0) still drops
 + * inputs above 32 bits (ARM IHI 0062D 1.6), and with mkadt.py --highmem all
-+ * our DMA memory is above 4 GiB. Boot-arg ufssmmu: 0 skip, 1 (default) read
-+ * and log only, 2 also set VA64 on that bank if it is needed and missing.
++ * our DMA memory is above 4 GiB. VA64 is set on that bank whenever it is
++ * needed and missing (without it UFS DMA cannot work at all). Boot-arg
++ * ufssmmu: 0 skip, 1 read and log only, 2 (default) also set VA64.
 + * ufssmmusid= / ufssmmumask= override the stream (another board).
 + */
 +#define APPS_SMMU_PA    0x15000000u
@@ -40,7 +41,7 @@ index 64e3a45..2b96c49 100644
 +static void
 +ufs_smmu_check(void)
 +{
-+	uint32_t mode = 1, sid = 0x100, mask = 0xf;
++	uint32_t mode = 2, sid = 0x100, mask = 0xf;
 +	PE_parse_boot_argn("ufssmmu", &mode, sizeof(mode));
 +	PE_parse_boot_argn("ufssmmusid", &sid, sizeof(sid));
 +	PE_parse_boot_argn("ufssmmumask", &mask, sizeof(mask));
@@ -89,7 +90,7 @@ index 64e3a45..2b96c49 100644
 +		}
 +		if (high && !(cba2r & 1)) {
 +			if (mode < 2) {
-+				printf("SWEET UFS: SMMU: CB%u is 32-bit and the DMA is above 4 GiB: boot with ufssmmu=2 to set VA64\n", cb);
++				printf("SWEET UFS: SMMU: CB%u is 32-bit and the DMA is above 4 GiB (ufssmmu=1: left as is)\n", cb);
 +				continue;
 +			}
 +			smmu_wr(smmu, pg + 0x800 + 4 * cb, cba2r | 1);
@@ -106,7 +107,7 @@ index 64e3a45..2b96c49 100644
  static int
  ufs_take_over_host(void)
  {
-@@ -622,6 +709,7 @@ sweet_ufs_init(void)
+@@ -622,6 +710,7 @@ sweet_ufs_init(void)
  	su.lun = 0;
  	su.secsize = DEV_BSIZE;
  
