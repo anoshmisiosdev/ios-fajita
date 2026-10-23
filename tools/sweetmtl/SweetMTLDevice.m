@@ -263,11 +263,12 @@ SweetMTLDeclaresAttributes(MTLVertexDescriptor *_Nullable vertex_descriptor)
 - (instancetype)initWithAcceleratorPort:(mach_port_t)port
 {
 	sweetmtl_log("initWithAcceleratorPort:%u pid %d (%s)", port, getpid(), getprogname());
-#if SWEETMTL_HOST
+#if SWEETMTL_HOST || SWEETMTL_SIM
 	/* build.sh --host, for the local self-check (README.md, "Where it was tested"):
 	 * Metal's MTLIOAccelDevice answers -initWithAcceleratorPort: for a real accelerator port
 	 * only, and a test machine has none, so the host build takes the plain -init and connects
-	 * the bridge all the same. */
+	 * the bridge all the same. build.sh --sim has no MTLIOAccelDevice at all (the class extends
+	 * NSObject there; see SweetMTLDriver.h), so it takes the same -init. */
 	self = [super init];
 #else
 	self = [super initWithAcceleratorPort:port];

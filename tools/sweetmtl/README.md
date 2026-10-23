@@ -70,6 +70,7 @@ why a `nm`-style grep for the name finds nothing.)
 ./build.sh                       # -> out/SweetMTLDriver.bundle, out/metal_compute,
                                  #    out/scale_and_offset.metallib (ad-hoc signed)
 ./build.sh --host                # macOS, for the local self-check (see below)
+./build.sh --sim                 # iOS Simulator arm64, for `xcrun simctl spawn` (see below)
 ADB=1 ./push.sh                  # or: ./push.sh /path/to/mounted/ios16-root
 ```
 
@@ -238,6 +239,54 @@ On the phone there is no Apple driver to ask, so the reference is a Mac run's
 
 ## Where it was tested
 
+- **In the iOS Simulator over MoltenVK: the driver loads and opens the ICD, and
+  metal2vulkan's device open stops on the Simulator's GPU** (2026-10-22,
+  Mac16,8 / M4 Pro, Xcode 27.0 27A266a, iOS 27.0 runtime 24A434, a new
+  `sweetmtl-sim` iPhone 17 device). `./build.sh --sim` builds the bundle,
+  `metal_compute`, `metal_render` and both metallibs for the simulator
+  (`vtool -show-build`: `platform IOSSIMULATOR`, `minos 16.0`) against the
+  `aarch64-apple-ios-sim` bridge, and links MoltenVK's simulator slice (static
+  only, in the Vulkan SDK's XCFramework or a `make iossim` build) into
+  `out/libMoltenVK.dylib`, which exports `vk_icdGetInstanceProcAddr`.
+  **The simulator build differs from the device build in one place:** the
+  Simulator's Metal has no `MTLIOAccelDevice` (its device is `MTLSimDevice :
+  _MTLDevice : NSObject`, probed with `objc_getClass`), so with `SWEETMTL_SIM=1`
+  `SweetMTLDevice` extends `NSObject` and takes `-init` in
+  `-initWithAcceleratorPort:`, as the host build does; device and host builds
+  are unchanged. Run as `xcrun simctl spawn <device> out/metal_compute
+  out/scale_and_offset.metallib` with `SIMCTL_CHILD_SWEETMTL_DIRECT`,
+  `SIMCTL_CHILD_SWEETMTL_ICD=out/libMoltenVK.dylib`:
+  - The tools themselves are fine there: on the Simulator's own Metal (no
+    `SWEETMTL_DIRECT`), `metal_compute` ends `OK`, and `metal_render` on
+    `device: Apple iOS simulator GPU (MTLSimDevice)` ends
+    `against out/render-apple.rgba: 0 of 4096 texels differ, by 0 at most` —
+    the Simulator draws the Mac's picture exactly.
+  - With the Vulkan SDK 1.4.341's MoltenVK **1.4.1**, metal2vulkan refuses the
+    device: `the runtime refused the adopted device: MoltenVK runs with
+    MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS off: …; turn the setting back on`.
+    That is a misreading, not the setting: MoltenVK's own log says `Descriptor
+    sets binding resources using Metal argument buffers.`, with or without
+    `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=1`. metal2vulkan decides from
+    `maxPerStageDescriptorUpdateAfterBindSampledImages` (1,000,000 only for
+    *tier-2* argument buffers) on the assumption that every Apple GPU is tier 2,
+    and the Simulator's GPU is tier 1 (`argumentBuffersSupport`, `GPU Family
+    Apple 2` in MoltenVK's log).
+  - With MoltenVK **1.4.2** built from source (`make iossim`, a release
+    metal2vulkan has not measured, so it is not refused), the device opens
+    (`Created VkDevice to run on GPU Apple iOS simulator GPU`) and the process
+    then aborts in Metal's validation: `validateWithDevice:5101: failed
+    assertion 'Render Pipeline Descriptor Validation No valid pixelFormats set.'`.
+    The stack (lldb): `sweetmtl_device_new` → `Device::from_raw` →
+    `prime::prime` → `Primer::render_step` → `vkCreateGraphicsPipelines` →
+    MoltenVK `MVKGraphicsPipeline` → `-[_MTLDevice
+    newRenderPipelineStateWithDescriptor:completionHandler:]`. metal2vulkan
+    primes every new device with a pipeline that rasterizes nothing
+    (`rasterizerDiscardEnable`); MoltenVK makes that a Metal descriptor with
+    `rasterizationEnabled = NO` and, since it only sets color formats while
+    rasterizing color (`MVKPipeline.mm`), no pixel formats — which macOS's Metal
+    takes and the Simulator's does not. It is before any bridge call on the
+    device, so neither tool's own work is reached; getting further needs
+    MoltenVK or metal2vulkan to change, not the driver.
 - **Render, on this Mac over MoltenVK: bit-identical to Apple's own Metal**
   (2026-10-22, the same Mac16,8 / M4 Pro / macOS 27.0 / MoltenVK 1.4.2).
   `./out/metal_render out/triangle.metallib out/render-apple` on Apple's driver

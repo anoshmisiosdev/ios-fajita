@@ -212,8 +212,19 @@ BOOL sweetmtl_stub_selector(Class cls, SEL sel, BOOL class_method);
                                        error:(NSError *_Nullable *_Nullable)error;
 @end
 
+#if SWEETMTL_SIM
+/* build.sh --sim only: the iOS Simulator's Metal.framework has no MTLIOAccelDevice (its device is
+ * MTLSimDevice : _MTLDevice : NSObject, over Apple's simulator driver, and an IOAcceleratorES
+ * plugin is never loaded there), so a class that extends it cannot link. The simulator build
+ * extends NSObject and keeps the same entry point; the tools reach it through SWEETMTL_DIRECT. The
+ * device and host builds are unchanged. */
+@interface SweetMTLDevice : NSObject <MTLDevice, SweetMTLAirLibrary>
+- (instancetype)initWithAcceleratorPort:(mach_port_t)port;
+@end
+#else
 @interface SweetMTLDevice : MTLIOAccelDevice <MTLDevice, SweetMTLAirLibrary>
 @end
+#endif
 
 NS_ASSUME_NONNULL_END
 

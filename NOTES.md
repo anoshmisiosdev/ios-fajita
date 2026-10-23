@@ -319,6 +319,65 @@
   The `driver` job built `metal_render` (`Mach-O 64-bit executable arm64`, sha256
   69976044…ab96fc4) and `triangle.metallib` (Apple metal 32023.157, sha256
   29b16110…de28d1f) for iphoneos and uploaded them in `sweetmtl-driver-ios`.
+- **The driver in the iOS Simulator over MoltenVK (2026-10-22, observation):**
+  Mac16,8 (M4 Pro), Xcode 27.0 (27A266a), iOS 27.0 simulator runtime (24A434),
+  a new device `sweetmtl-sim` (iPhone 17, F7C9A873-A45E-492A-BBE6-8188DD242794).
+  Built: `rustup target add aarch64-apple-ios-sim`, `cargo build --release
+  --target aarch64-apple-ios-sim` (header unchanged), and a new `sh build.sh
+  --sim` (`-target arm64-apple-ios16.0-simulator`, `-DSWEETMTL_SIM=1`): bundle,
+  `metal_compute`, `metal_render`, both metallibs (Apple metal 32023.921), all
+  `platform IOSSIMULATOR` / `minos 16.0`, plus `out/libMoltenVK.dylib` linked
+  `-all_load` from the XCFramework's `ios-arm64_x86_64-simulator` static slice
+  (`$SWEETMTL_MOLTENVK_XCFRAMEWORK`, default the Vulkan SDK's
+  `/usr/local/lib/MoltenVK.xcframework`), exporting `_vk_icdGetInstanceProcAddr`.
+  **Probe:** the Simulator's Metal has no `MTLIOAccelDevice` (`objc_getClass`:
+  absent; `Metal.tbd` of the iPhoneSimulator27.0 SDK lists no `MTLIOAccel*`);
+  its device is `MTLSimDevice : _MTLDevice : NSObject`, `argumentBuffersSupport`
+  tier 1, no Apple7/Apple9/Mac2 family. So `SWEETMTL_SIM` makes
+  `SweetMTLDevice` extend `NSObject` (device/host builds unchanged).
+  **Runs** (`xcrun simctl spawn` with `SIMCTL_CHILD_SWEETMTL_DIRECT`,
+  `SIMCTL_CHILD_SWEETMTL_ICD`, `SIMCTL_CHILD_MVK_CONFIG_LOG_LEVEL`):
+  (a) On the Simulator's own Metal, no `SWEETMTL_DIRECT`: `metal_compute` →
+  `output[999] = 2997: as expected` / `OK`; `metal_render` → `device: Apple iOS
+  simulator GPU (MTLSimDevice)`, the same four sampled texels as on the Mac, and
+  `against out/render-apple.rgba: 0 of 4096 texels differ, by 0 at most` / `OK`.
+  (b) SweetMTL on the Vulkan SDK 1.4.341's **MoltenVK 1.4.1**: `sweetmtl:
+  initWithAcceleratorPort:0 pid … (metal_compute)`, `sweetmtl: ICD
+  …/out/libMoltenVK.dylib (SWEETMTL_ICD)`, then `sweetmtl: no Metal device: the
+  runtime refused the adopted device: MoltenVK runs with
+  MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS off: Metal always binds through
+  argument buffers, and without them Metal's compiler crashes on large fragment
+  functions and the bind limits shrink; turn the setting back on`, exit 1 — the
+  same with `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=1`. MoltenVK's own
+  `[mvk-info]` says `Descriptor sets binding resources using Metal argument
+  buffers.` and `GPU Family Apple 2`, `Read-Write Texture Tier 1`: metal2vulkan
+  (`device/argument_buffers.rs`, unchanged at upstream head a2c440b) reads "off"
+  from `maxPerStageDescriptorUpdateAfterBindSampledImages` != 1,000,000 at
+  driverVersion 10401 on vendor 0x106b, assuming every Apple GPU is tier 2;
+  this one is tier 1, so the refusal is a false one.
+  (c) SweetMTL on **MoltenVK 1.4.2** built here (`git clone --branch v1.4.2`,
+  db66022, `./fetchDependencies --iossim && make iossim`; 10402 is not a release
+  metal2vulkan reads, so it is not refused): `[mvk-info] Created VkDevice to run
+  on GPU Apple iOS simulator GPU`, then `validateWithDevice:5101: failed
+  assertion 'Render Pipeline Descriptor Validation No valid pixelFormats set.'`,
+  `Child process terminated with signal 6: Abort trap`, exit 134. lldb (`xcrun
+  lldb`, attached to a `simctl spawn -w` child) on the requesting thread:
+  `-[SweetMTLDevice initWithAcceleratorPort:]` → `sweetmtl_device_new` →
+  `backend::open` → `Device::from_raw` → `Device::assemble` → `prime::prime` →
+  `Primer::render_step` → `create_graphics_pipelines` → `vkCreateGraphicsPipelines`
+  → `MVKGraphicsPipeline::initMTLRenderPipelineState` → (dispatch worker)
+  `-[_MTLDevice newRenderPipelineStateWithDescriptor:completionHandler:]` →
+  `validateWithDevice` → `MTLReportFailure` → `abort`. metal2vulkan primes each
+  new device (`device/prime.rs`) with a vertex-only pipeline,
+  `rasterizerDiscardEnable`; MoltenVK 1.4.2's `MVKPipeline.mm` then sets
+  `rasterizationEnabled = NO` and fills color formats only `if
+  (_isRasterizingColor …)`, so the descriptor has none — accepted by macOS's
+  Metal (the host runs pass), fatal in the Simulator's. It happens inside
+  `from_raw`, before the bridge does anything with the device, and priming is
+  unconditional, so it is not reachable from the bridge; the next step is
+  upstream (metal2vulkan's tier-1 reading and its priming pipeline, or MoltenVK
+  keeping the subpass's formats). Neither tool's own work ran on SweetMTL in
+  the Simulator.
 - **Pipeline status (2026-10-22, observation):** the kernel hook, the bridge
   (`tools/sweetmtl/bridge/`) and `tools/sweetmtl/out/SweetMTLDriver.bundle`
   (driver + bridge + tool, iphoneos arm64) are built, and so is Turnip

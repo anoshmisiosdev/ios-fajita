@@ -16,6 +16,15 @@
 #   ./build.sh --host    macOS, for the local self-check (an Intel Mac gets its own arch): the same
 #                        bundle built against the host's bridge, for the tool's SWEETMTL_DIRECT mode
 #                        (the commands are in README.md, "Where it was tested")
+#   ./build.sh --sim     iOS Simulator arm64 (-target arm64-apple-ios16.0-simulator), for running
+#                        the tools under `xcrun simctl spawn` with SWEETMTL_DIRECT: the same
+#                        outputs, built against the simulator's bridge
+#                        (target/aarch64-apple-ios-sim/release), with SWEETMTL_SIM=1 - the
+#                        Simulator's Metal has no MTLIOAccelDevice, so SweetMTLDevice extends
+#                        NSObject there (SweetMTLDriver.h) - plus out/libMoltenVK.dylib, the
+#                        simulator slice of $SWEETMTL_MOLTENVK_XCFRAMEWORK (default: the Vulkan
+#                        SDK's /usr/local/lib/MoltenVK.xcframework, which ships it static only)
+#                        linked into a dylib to be the tools' ICD
 #
 # The bundle links the bridge (tools/sweetmtl/bridge) *statically*: the phone has no dyld path for
 # a second dylib next to the bundle, and the bridge is the only user of metal2vulkan's runtime. The
@@ -24,7 +33,8 @@
 #   $SWEETMTL_BRIDGE_ARTIFACT        an unpacked sweetmtl-bridge-ios CI artifact's directory, or
 #                                    the libsweetmtl_bridge.a itself
 #   bridge/out/libsweetmtl_bridge.a                          the CI job's staged output
-#   bridge/target/aarch64-apple-ios/release/libsweetmtl_bridge.a   (--host: target/{release,debug})
+#   bridge/target/aarch64-apple-ios/release/libsweetmtl_bridge.a   (--host: target/{release,debug};
+#                                                                   --sim: aarch64-apple-ios-sim)
 #
 # So, to build against the CI artifact:
 #   gh run download --repo anoshmisiosdev/ios-sweet -n sweetmtl-bridge-ios -D /tmp/sweetmtl-bridge
@@ -41,6 +51,9 @@ if [ "${1:-}" = "--host" ]; then
 	MODE=host
 	SDK=macosx
 	ARCH=$(uname -m)
+elif [ "${1:-}" = "--sim" ]; then
+	MODE=sim
+	SDK=iphonesimulator
 fi
 
 CC="xcrun -sdk $SDK clang -arch $ARCH"
@@ -48,6 +61,12 @@ if [ "$MODE" = host ]; then
 	CC="$CC -mmacosx-version-min=13.0"
 	BRIDGE_CANDIDATES="$H/bridge/target/release/libsweetmtl_bridge.a $H/bridge/target/debug/libsweetmtl_bridge.a"
 	BRIDGE_HINT="cd $H/bridge && cargo build"
+elif [ "$MODE" = sim ]; then
+	# -target names the simulator platform; -arch with -miphoneos-version-min would make a device
+	# binary the Simulator refuses to load.
+	CC="xcrun -sdk $SDK clang -target arm64-apple-ios16.0-simulator"
+	BRIDGE_CANDIDATES="$H/bridge/target/aarch64-apple-ios-sim/release/libsweetmtl_bridge.a"
+	BRIDGE_HINT="cd $H/bridge && cargo build --release --target aarch64-apple-ios-sim"
 else
 	CC="$CC -miphoneos-version-min=16.0"
 	BRIDGE_CANDIDATES="$H/bridge/out/libsweetmtl_bridge.a $H/bridge/target/aarch64-apple-ios/release/libsweetmtl_bridge.a"
@@ -93,6 +112,8 @@ FLAGS="-bundle -fobjc-arc -O2 -Wall -Wextra -Wno-protocol -Wno-incomplete-implem
 FLAGS="$FLAGS -Wno-objc-protocol-property-synthesis"
 if [ "$MODE" = host ]; then
 	FLAGS="$FLAGS -DSWEETMTL_HOST=1"
+elif [ "$MODE" = sim ]; then
+	FLAGS="$FLAGS -DSWEETMTL_SIM=1"
 fi
 
 $CC $FLAGS -I "$H/bridge/include" -o "$B/Contents/MacOS/SweetMTLDriver" \
@@ -125,6 +146,31 @@ if xcrun -sdk "$SDK" metal --version >/dev/null 2>&1; then
 else
 	echo "metal: this Xcode has no Metal compiler, the metallibs are not built" >&2
 	echo "       (xcodebuild -downloadComponent MetalToolchain; or use SWEETMTL_AIR=1)" >&2
+fi
+
+# --sim: MoltenVK for the Simulator, as a dylib the bridge can open by path (it dlopens the ICD).
+# The Vulkan SDK's XCFramework has the slice as a static library only, so it is linked whole
+# (-all_load) into one, with the frameworks MoltenVK uses. Where there is no slice, the build says
+# so and carries on: SWEETMTL_ICD can name any simulator ICD.
+if [ "$MODE" = sim ]; then
+	XCF=${SWEETMTL_MOLTENVK_XCFRAMEWORK:-/usr/local/lib/MoltenVK.xcframework}
+	MVK=$(ls -d "$XCF"/ios-*-simulator/libMoltenVK.a "$XCF"/ios-*-simulator/*.dylib 2>/dev/null | head -1)
+	case "$MVK" in
+	*.a)
+		$CC -dynamiclib -install_name @rpath/libMoltenVK.dylib -o "$O/libMoltenVK.dylib" \
+			-Wl,-all_load "$MVK" -framework Metal -framework Foundation -framework QuartzCore \
+			-framework IOSurface -framework UIKit -framework CoreGraphics -framework IOKit -lc++
+		echo "moltenvk: out/libMoltenVK.dylib from $MVK"
+		;;
+	*.dylib)
+		cp "$MVK" "$O/libMoltenVK.dylib"
+		echo "moltenvk: out/libMoltenVK.dylib copied from $MVK"
+		;;
+	*)
+		echo "moltenvk: no ios simulator slice in $XCF, out/libMoltenVK.dylib not built" >&2
+		echo "          (set SWEETMTL_MOLTENVK_XCFRAMEWORK, or point SWEETMTL_ICD elsewhere)" >&2
+		;;
+	esac
 fi
 
 codesign -f -s - "$B"
