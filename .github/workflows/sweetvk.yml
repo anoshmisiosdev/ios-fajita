@@ -3,7 +3,8 @@ name: sweetvk
 # Mesa Turnip (libvulkan_freedreno.dylib) for iOS and its CLI test, built for the device here:
 # a change that only compiles with the host SDK still fails this build. The build fetches Mesa
 # 23.1.9 from archive.mesa3d.org and configures it for the iPhoneOS SDK the runner has, so the
-# runner needs nothing but Xcode, meson and ninja.
+# runner needs nothing but Xcode, meson, ninja and a bison/flex newer than the ones in the system
+# (Apple ships bison 2.3, which cannot parse the %code in Mesa's ir3_parser.y).
 on:
   workflow_dispatch:
   push:
@@ -27,7 +28,7 @@ concurrency:
 jobs:
   ios:
     runs-on: macos-14
-    # ~10 min for Mesa's 492 targets on a cold runner, plus configure and the strict relink check.
+    # ~10 min for Mesa's 493 targets on a cold runner, plus configure and the strict relink check.
     timeout-minutes: 90
     defaults:
       run:
@@ -37,16 +38,27 @@ jobs:
 
       - name: Toolchain
         run: |
-          brew list meson >/dev/null 2>&1 || brew install meson ninja
+          brew list meson >/dev/null 2>&1 || brew install meson
+          brew list ninja >/dev/null 2>&1 || brew install ninja
+          # Apple's /usr/bin/{bison,flex} are 2.3/2.5, older than Mesa's parsers
+          # need (ir3_parser.y uses %code, a bison 3 feature); brew's are keg-only,
+          # so put them in front of the system ones for the build step.
+          brew list bison >/dev/null 2>&1 || brew install bison
+          brew list flex >/dev/null 2>&1 || brew install flex
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
+          "$(brew --prefix bison)/bin/bison" --version | head -1
+          "$(brew --prefix flex)/bin/flex" --version
           meson --version
           ninja --version
           xcrun --sdk iphoneos --show-sdk-path
 
       - name: Build the ICD and the test
-        # build.sh generates the cross file from the SDK xcrun finds, compiles the msm emulation
-        # (sweet_drm.c) into out/libsweetvk.a, fetches/patches/configures Mesa 23.1.9, ninja-links
-        # the ICD, checks its exports and relinks once without -undefined dynamic_lookup to prove
-        # that the only unresolved references are Mesa's own weak entrypoint tables (see README).
+        # build.sh generates the cross file from the SDK xcrun finds, fetches Mesa if it is not
+        # there yet, compiles the msm emulation (sweet_drm.c) into out/libsweetvk.a, patches and
+        # configures Mesa at that version, ninja-links the ICD, checks its exports and relinks once
+        # without -undefined dynamic_lookup to prove that the only unresolved references are Mesa's
+        # own weak entrypoint tables (see README).
         run: sh build.sh
 
       - name: The artifact is the device's

@@ -112,7 +112,8 @@ if [ "${1:-}" = "--cross-only" ]; then
 	exit 0
 fi
 
-# Mesa itself: fetch, patch, configure (no-op once done), then the ICD target.
+# Mesa itself: patch and configure (the source was fetched above on a cold
+# tree), then the ICD target.
 sh "$H/setup-mesa.sh"
 ensure_python
 echo "building the ICD (ninja)"

@@ -190,9 +190,11 @@ Turnip needs it.
 
 ## Testing on the phone
 
+Copy `out/libvulkan_freedreno.dylib` and `out/vk_compute` to the phone (the
+driver where `SweetMTLDevice.m` looks for it is a good place), then:
+
 ```sh
-# stage the driver where SweetMTLDevice.m looks for it, then:
-/usr/lib/sweetmtl/vk_compute                          # default path
+/usr/lib/sweetmtl/vk_compute                          # default ICD path
 /usr/lib/sweetmtl/vk_compute /path/to/libvulkan_freedreno.dylib
 ```
 
@@ -203,7 +205,7 @@ storage-buffer dispatch (`out.x[i] = in.x[i] * 2 + 1`) and checks the result
 after a fence wait and a `vkInvalidateMappedMemoryRanges`. Every step prints a
 line, so the console says where it stopped.
 
-On the Mac only the code path *building* can be checked — the ICD's only
-transport is the SweetGPU kernel, and a macOS `dlopen()` of this dylib fails on
-its `platform IOS` build version, which is itself a useful signal that the
-artifact is an iOS one.
+On the Mac only the *building* can be checked. A macOS `dlopen()` of the
+artifact is refused for the right reason — `(mach-o file … but incompatible
+platform (have 'iOS', need 'macOS'))` — and the phone is the only place where
+SweetGPU, and so Turnip, exists at all.

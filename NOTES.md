@@ -349,7 +349,9 @@
   `_vk_icdNegotiateLoaderICDInterfaceVersion` (what `tools/sweetmtl`'s bridge
   `dlsym()`s; its `SweetMTLPickICD` already looks for that path). The test is
   `out/vk_compute` (50 560 bytes). Only the *building* of the test is provable
-  here; it can only pass on the phone (its only transport is SweetGPU).
+  here; it can only pass on the phone (its only transport is SweetGPU). A
+  `dlopen()` of the ICD on this Mac is refused for the right reason
+  (`mach-o file … but incompatible platform (have 'iOS', need 'macOS')`).
 - **sweetvk's three Mesa hunks (`mesa.patch`, observation):** (1)
   `__APPLE__` `os_mmap`/`os_munmap` in `freedreno_bo.c` become
   `sweet_drm_bo_map()` — no DRM to mmap, the kernel already mapped the bo, and
@@ -416,10 +418,18 @@
   `setup-mesa.sh` ran *after* it, and locally the source was always already
   there. Fixed: `build.sh` now fetches first via a new `setup-mesa.sh
   --fetch-only`, and the fetch itself fails early on a truncated download
-  (`curl -f`, `tar tf`, a `meson.build` check after extraction). Re-run pending;
-  the fix was then reproduced from an empty `tools/sweetvk/build` locally.
-  The phone side is still untouched: nothing is staged in `/usr/lib/sweetmtl/`,
-  and the ICD has never been run against SweetGPU or the A630.
+  (`curl -f`, `tar tf`, a `meson.build` check after extraction). The fix was
+  reproduced locally from an empty `tools/sweetvk/build` (493/493 targets, the
+  same 7 557 776-byte ICD). The next run, **39878348374 on `91c38db`, FAILED in
+  47 s at Mesa target [46/493]**, a second environment difference: the runner's
+  `/usr/bin/bison` is **2.3** and cannot parse `ir3_parser.y`'s `%code`
+  (`invalid directive: '%code'`); local runs were green because homebrew's
+  bison 3.8.2/flex 2.6.4 are first on this Mac's PATH. Fixed in the workflow's
+  Toolchain step: `brew install bison flex` (both keg-only) with their
+  `$(brew --prefix …)/bin` appended to `$GITHUB_PATH`, so the build step meson
+  configures sees them. Re-run pending. The phone side is still untouched:
+  nothing is staged in `/usr/lib/sweetmtl/`, and the ICD has never been run
+  against SweetGPU or the A630.
 - Firmware, device dumps and serials stay out of git. Unfinished: hardware bring-up
   (levels 1 -> 8), then Turnip behind the client, then the Metal/`IOAcceleratorES`
   bundle end to end.
