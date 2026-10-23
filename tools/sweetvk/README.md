@@ -36,10 +36,12 @@ sh setup-mesa.sh --reconfigure
 ```
 
 `build.sh` generates `build/ios-cross.txt` from `ios-cross.txt.in` (the SDK
-path differs per machine), compiles the emulation into `out/libsweetvk.a`, has
-`setup-mesa.sh` fetch/verify/patch/configure Mesa 23.1.9, ninja-builds the ICD,
-names and signs it, checks its exports and its unresolved symbols, and then
-builds the test. See the file for the step-by-step comments.
+path differs per machine), fetches Mesa if it is not there yet (`setup-mesa.sh
+--fetch-only`, because the emulation compiles against Mesa's `drm-uapi`
+headers), compiles the emulation into `out/libsweetvk.a`, has `setup-mesa.sh`
+patch and configure Mesa 23.1.9, ninja-builds the ICD, names and signs it,
+checks its exports and its unresolved symbols, and then builds the test. See
+the file for the step-by-step comments.
 
 `.github/workflows/sweetvk.yml` does the same on `macos-14` and uploads
 `out/`, so a phone-side run starts from a checked artifact rather than a build
@@ -164,7 +166,9 @@ take on the phone if a later change starts to use them):
   `TimelineSignal`/`TimelineWait` return `-ENOSYS`. `DRM_CAP_SYNCOBJ_TIMELINE`
   answers `-EINVAL` so Turnip takes the *binary* syncobj path — which this does
   support: a submitting call that signals a syncobj remembers its fence seqno,
-  and in-syncobjs are waited on (one cap, 10 s) before the submit.
+  and in-syncobjs are waited on before the submit. An in-syncobj that no submit
+  has signalled yet is polled instead of blocked on (there is no dma-fence to
+  sleep on), capped at 10 s (`SWEET_SUBMIT_WAIT_MS`).
 * **Submits are chunked** at `SWEET_GPU_MAX_IBS` (256) IBs and 16384 bos; a big
   submit becomes several kernel submits in order.
 * Only `MSM_SUBMIT_CMD_BUF` has real semantics. `IB_TARGET_BUF` is treated as

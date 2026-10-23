@@ -409,10 +409,17 @@
 - **sweetvk CI (2026-10-22):** `.github/workflows/sweetvk.yml` (new) builds it on
   `macos-14` (`brew install meson ninja`, `sh build.sh`), checks the artifact is
   the device's (`file`, `vtool -show-build` = `platform IOS`, ad-hoc signature,
-  install name, the three exports by diff) and uploads `out/`. Run ID to be
-  filled in when this push's CI is watched. The phone side is still untouched:
-  nothing is staged in `/usr/lib/sweetmtl/`, and the ICD has never been run
-  against SweetGPU or the A630.
+  install name, the three exports by diff) and uploads `out/`. Run **39878055411
+  FAILED** in *Build the ICD and the test*: `no Mesa source at …/build/mesa-23.1.9:
+  run setup-mesa.sh first`. A real cold-start bug — `build_shim` compiles
+  `sweet_drm.c` with `-I $SRC/include` (Mesa's `drm-uapi` headers) but
+  `setup-mesa.sh` ran *after* it, and locally the source was always already
+  there. Fixed: `build.sh` now fetches first via a new `setup-mesa.sh
+  --fetch-only`, and the fetch itself fails early on a truncated download
+  (`curl -f`, `tar tf`, a `meson.build` check after extraction). Re-run pending;
+  the fix was then reproduced from an empty `tools/sweetvk/build` locally.
+  The phone side is still untouched: nothing is staged in `/usr/lib/sweetmtl/`,
+  and the ICD has never been run against SweetGPU or the A630.
 - Firmware, device dumps and serials stay out of git. Unfinished: hardware bring-up
   (levels 1 -> 8), then Turnip behind the client, then the Metal/`IOAcceleratorES`
   bundle end to end.

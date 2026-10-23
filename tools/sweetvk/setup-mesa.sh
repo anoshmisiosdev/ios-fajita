@@ -5,6 +5,7 @@
 # out/libvulkan_freedreno.dylib (a Mesa ICD) and out/vk_compute.
 #
 #   ./setup-mesa.sh                 fetch, patch and configure (idempotent)
+#   ./setup-mesa.sh --fetch-only    only the tarball and the source tree
 #   ./setup-mesa.sh --reconfigure   re-run meson setup with the current options
 #   ./setup-mesa.sh --clean         throw the source and build directories away
 #
@@ -12,6 +13,10 @@
 # tools/sweetvk/build/ (gitignored); the cross file is generated there too
 # (ios-cross.txt.in -> build/ios-cross.txt) because the SDK and checkout paths
 # differ per machine. Ported from joranv1/ios-sailfish's tools/sweetgl.
+#
+# --fetch-only is for build.sh: it compiles the msm emulation against Mesa's
+# drm-uapi headers before anything is configured, and on a machine that has
+# never built this, setup-mesa.sh is what knows how to get the source.
 set -e
 H=$(cd "$(dirname "$0")" && pwd)
 B=$H/build
@@ -28,14 +33,29 @@ fi
 mkdir -p "$B"
 
 # 1. The release tarball (18 MB), kept next to the source so a rebuild is local.
-if [ ! -f "$B/mesa-$V.tar.xz" ]; then
-	echo "fetching mesa-$V.tar.xz"
-	curl -sSLo "$B/mesa-$V.tar.xz.part" "https://archive.mesa3d.org/mesa-$V.tar.xz"
-	mv "$B/mesa-$V.tar.xz.part" "$B/mesa-$V.tar.xz"
-fi
-if [ ! -d "$SRC" ]; then
-	echo "extracting mesa-$V"
-	tar xf "$B/mesa-$V.tar.xz" -C "$B"
+fetch_mesa()
+{
+	if [ ! -f "$B/mesa-$V.tar.xz" ]; then
+		echo "fetching mesa-$V.tar.xz"
+		curl -fsSLo "$B/mesa-$V.tar.xz.part" \
+		    "https://archive.mesa3d.org/mesa-$V.tar.xz"
+		# Fail here rather than inside tar much later: a truncated
+		# download lists nothing.
+		tar tf "$B/mesa-$V.tar.xz.part" > /dev/null
+		mv "$B/mesa-$V.tar.xz.part" "$B/mesa-$V.tar.xz"
+	fi
+	if [ ! -d "$SRC" ]; then
+		echo "extracting mesa-$V"
+		tar xf "$B/mesa-$V.tar.xz" -C "$B"
+		[ -f "$SRC/meson.build" ] || { echo "mesa-$V did not extract" >&2; exit 1; }
+	fi
+}
+
+fetch_mesa
+
+if [ "${1:-}" = --fetch-only ]; then
+	echo "mesa-$V is in $SRC"
+	exit 0
 fi
 
 # 2. mesa.patch: only what an OS with no DRM needs (see the file).

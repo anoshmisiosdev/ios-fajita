@@ -12,14 +12,17 @@
 #
 # Steps:
 #   1. generate build/ios-cross.txt from ios-cross.txt.in (xcrun finds the SDK)
-#   2. compile the msm emulation (sweet_drm.c) for iphoneos into
+#   2. fetch Mesa 23.1.9 if it is not there yet: the msm emulation is compiled
+#      against its drm-uapi headers
+#   3. compile the msm emulation (sweet_drm.c) for iphoneos into
 #      out/libsweetvk.a; Mesa's libvulkan_freedreno link force-loads it
 #      (the cross file's c_link_args/cpp_link_args)
-#   3. setup-mesa.sh: fetch Mesa 23.1.9, mesa.patch, meson configure
-#   4. ninja the ICD, copy it to out/, name it for the phone's /usr/lib/sweetmtl
+#   4. setup-mesa.sh: patch Mesa 23.1.9, meson configure
+#   5. ninja the ICD, copy it to out/, name it for the phone's /usr/lib/sweetmtl
 #      (SweetMTLDevice.m's SWEETMTL_ICD default), ad-hoc sign, check it exports
-#      vk_icdGetInstanceProcAddr (what tools/sweetmtl's bridge dlsym's)
-#   5. compile out/vk_compute
+#      vk_icdGetInstanceProcAddr (what tools/sweetmtl's bridge dlsym's) and
+#      relink it once without -undefined dynamic_lookup (see check_unresolved)
+#   6. compile out/vk_compute
 #
 # Nothing here touches the kernel, the boot arguments or the code-signing
 # relaxation; the phone side is a file to copy, nothing more.
@@ -97,6 +100,11 @@ build_shim()
 
 gen_cross
 ensure_python
+# The shim below compiles against the drm-uapi headers in Mesa's source tree,
+# and Mesa is fetched later (setup-mesa.sh, which patches and configures it),
+# so a machine that has never built this has to fetch it first. This was a real
+# cold-start bug: locally the source was always already there.
+[ -d "$SRC" ] || sh "$H/setup-mesa.sh" --fetch-only
 build_shim
 
 if [ "${1:-}" = "--cross-only" ]; then
