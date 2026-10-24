@@ -17,6 +17,7 @@ struct fajita_disp {
 	int ctl, pp, pipe;
 	uint32_t src, ystride;
 	uint32_t ctl_top, sync_cfg, ar_before, ar_after;
+	uint32_t te_set;	/* 0x100 | TEAR_CHECK_EN readback if the shim enabled it */
 };
 
 int fajita_disp_autorefresh(struct fajita_disp *d);

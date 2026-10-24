@@ -132,6 +132,7 @@ static void disp_report(int drc)
 	}
 	con_hex2("DPU CTL", "n=", (uint32_t)disp.ctl, "top=", disp.ctl_top);
 	con_hex2("DPU PP", "n=", (uint32_t)disp.pp, "sync=", disp.sync_cfg);
+	con_hex("DPU TE SET", disp.te_set);
 	con_hex2("DPU AR", "was=", disp.ar_before, "now=", disp.ar_after);
 	con_hex2("DPU PIPE", "n=", (uint32_t)disp.pipe, "ystride=", disp.ystride);
 	con_hex2("DISPCC", "gdsc=", disp.gdsc, "cfg=", disp.cfg_gdsc);

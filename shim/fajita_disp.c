@@ -37,6 +37,7 @@
 #define PP(n)			(MDP_BASE + 0x70000 + 0x800 * (n))
 #define PP_TEAR_CHECK_EN	0x00
 #define PP_SYNC_CONFIG_VSYNC	0x04	/* bit 19: vsync counter enable */
+#define PP_SYNC_CONFIG_HEIGHT	0x08
 #define PP_LINE_COUNT		0x2c
 #define PP_AUTOREFRESH_CONFIG	0x30	/* bit 31 enable, [15:0] TE pulses per frame */
 /* source pipes (dpu_4_0_sdm845.h): VIG0-3, DMA0-3 */
@@ -71,6 +72,23 @@ int fajita_disp_autorefresh(struct fajita_disp *d)
 			d->pp = n;
 			d->sync_cfg = rd(PP(n) + PP_SYNC_CONFIG_VSYNC);
 			d->ar_before = rd(PP(n) + PP_AUTOREFRESH_CONFIG);
+		}
+	}
+	/*
+	 * fajita ABL (seen 2026-10-23): PP0 has its internal vsync counter
+	 * (SYNC_CONFIG_VSYNC bit 19), the frame height and even autorefresh
+	 * programmed, but TEAR_CHECK_EN is 0, so the sync engine never runs
+	 * and no frame is sent. Switch tear check on for such a PP.
+	 */
+	for (int n = 0; n < 4 && d->pp < 0; n++) {
+		uint32_t sync = rd(PP(n) + PP_SYNC_CONFIG_VSYNC);
+		if ((sync & (1U << 19)) && rd(PP(n) + PP_SYNC_CONFIG_HEIGHT) != 0) {
+			d->pp = n;
+			d->sync_cfg = sync;
+			d->ar_before = rd(PP(n) + PP_AUTOREFRESH_CONFIG);
+			wr(PP(n) + PP_TEAR_CHECK_EN, 1);
+			__asm__ volatile("dsb sy" ::: "memory");
+			d->te_set = rd(PP(n) + PP_TEAR_CHECK_EN) | 0x100;
 		}
 	}
 	/*

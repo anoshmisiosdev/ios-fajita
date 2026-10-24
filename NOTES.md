@@ -1,5 +1,28 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> 2026-10-23 late night: 6T display FIXED (shim enables PP0 tear check) <<<
+- `fajita_dpu=3` (patch 0090, CI run 40069379881 on `ced3e7d`, success) logged
+  the DPU as ABL leaves it: `CTL0 top 00020020 layer 01000005` (cmd mode, INTF_1,
+  VIG0 on LM0); `SSPP0 size 09240438 addr 9d400000 ystride 000010e0 fmt 000237ff
+  unpack 03020001 op 80000000` (fetch = our 1080x2340 ARGB framebuffer, correct);
+  `PP0 te 00000000 vsync 00080088 height 00000955 line 00000000 autorefresh
+  80000001`; PP1/PP2 all zero; CTL1-4 top 00001f00. CTL_FLUSH+CTL_START kicks
+  (mask computed 0x40020041 = VIG0|LM0|CTL|INTF_1) did not help: screen showed a
+  striped band (middle third this time) and PP0 line count stayed 0.
+- So ABL programs PP0's internal vsync counter (bit 19, no HW TE bit 20), height
+  and autorefresh, but leaves TEAR_CHECK_EN = 0. Shim and kernel only looked for
+  tear check already on, so they missed it.
+- Shim fix (`shim/fajita_disp.c`): if no PP has tear check on, take the PP whose
+  SYNC_CONFIG_VSYNC has bit 19 and a non-zero height, write TEAR_CHECK_EN = 1, then
+  set autorefresh as before; shim screen prints `DPU TE SET`. Kernel left at the
+  default `fajita_dpu` (1): it then sees tear check + autorefresh on and does not kick.
+- Result (boot 23:27:23, image = `fajita.sh phone` with the new shim, 3 GiB):
+  **the whole panel shows the live XNU console** (photo: SWEET USB events, launchd
+  boot tasks, `Obliterator: No obliteration needed`, `mount-phase-2`, `exec mount`,
+  boot progress band at the bottom). USB log streams; backboardd running.
+- Host gotcha: macOS `nc -ul` locks onto the first sender's port; restart it
+  after each phone reboot.
+
 ## >>> 2026-10-23 night: first iOS boot on the 6T - userland up, screen black <<<
 User approved erasing userdata. Observations:
 - Backups first (adb root, read-only, sha256 verified against the phone):
