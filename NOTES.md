@@ -1,5 +1,32 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> 2026-10-24 00:47: Metal loads SweetMTLDriver on the phone (flat bundle); MTLIOAccelDevice init refused <<<
+- Test client at boot: the root's `/System/Library/xpc/launchd.plist` job
+  `com.apple.bluetoothd` (crash-loops anyway) now runs `/usr/lib/sweetmtl/metal_compute
+  /usr/lib/sweetmtl/scale_and_offset.metallib` as root, no MachServices/LaunchEvents,
+  stdout/err /dev/null, OS_ACTIVITY_DT_MODE=YES, KeepAlive {SuccessfulExit: false};
+  original saved locally as build/launchd.plist.orig. Boot-args add
+  `sweetnull=backboardd,SpringBoard,metal_compute sweetiolog=metal_compute sweetsample=-`.
+- First run (macOS `Contents/MacOS` bundle from CI): `IOK metal_compute: matching
+  IOAcceleratorES -> 1 found`, then `FAIL MTLCreateSystemDefaultDevice() answered nil`,
+  no `sweetmtl:` line. The system's AGXMetalA11.bundle is flat (Info.plist + executable
+  at the root, CFBundleSupportedPlatforms iPhoneOS, MinimumOSVersion).
+- Flat, re-signed copy of the same binary (+ those two keys): **Metal loads it.**
+  `|metal_compute| initWithAcceleratorPort:3843 pid 398 (metal_compute)`, and
+  SpringBoard loads it too (`|SpringBoard| sweetmtl: unimplemented +[SweetMTLDevice
+  bundleForClass]`). Then `IOK metal_compute: open IOAcceleratorES type 1 ->
+  0xe00002c7` and `no Metal device: Metal's MTLIOAccelDevice refused the port`:
+  0087's IOAcceleratorES has no newUserClient, and MTLIOAccelDevice's init opens a
+  type-1 connection. `CODE SIGNING: cs_invalid_page(...) p=398[metal_compute] ...
+  allowing` (cs_enforcement_disable doing its job). Home screen unaffected (nil device ->
+  CPU renderer).
+- `tools/sweetmtl/build.sh` now builds the iOS bundle flat (+ Info.plist keys); CI
+  workflow checksum path updated. Not yet rebuilt on CI.
+- Host: macOS fastboot refuses the raw 16 GiB image ("Failed reading from userdata");
+  new `tools/img2simg.py` (zero 4 KiB blocks -> DONT_CARE) made build/ios16-root.simg in
+  9 s, verified block-for-block against the raw image; flashed in 383.8 s and the
+  boot after it went through without a USB replug. Lima VM deleted (disk full).
+
 ## >>> 2026-10-24 00:13: Metal load test (sweetaccel=1, no GPU): service seen, driver never created <<<
 - Installed CI artifacts into `build/ios16-root.img` (macOS `hdiutil attach -imagekey
   diskimage-class=CRawDiskImage -owners off`, then img2simg in the Lima VM):

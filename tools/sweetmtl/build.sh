@@ -102,7 +102,17 @@ BRIDGE=$(find_bridge) || {
 echo "bridge: $BRIDGE ($(wc -c < "$BRIDGE" | tr -d ' ') bytes)"
 
 rm -rf "$B"
-mkdir -p "$B/Contents/MacOS"
+# iOS bundles are flat, like the system's own AGXMetalA11.bundle: Info.plist and the executable at
+# the bundle root. On the phone (2026-10-24) Metal found the IOAcceleratorES but never created the
+# device from the macOS-style Contents/MacOS layout. The host build keeps the macOS layout.
+if [ "$MODE" = ios ]; then
+	BIN=$B/SweetMTLDriver
+	PLIST=$B/Info.plist
+else
+	BIN=$B/Contents/MacOS/SweetMTLDriver
+	PLIST=$B/Contents/Info.plist
+fi
+mkdir -p "$(dirname "$BIN")"
 
 # -bundle (MH_BUNDLE) with Objective-C: the MTLDevice protocol is huge and the part of it the
 # driver does not implement is answered by the stub in SweetMTLDevice.m, so the unimplemented-
@@ -116,11 +126,16 @@ elif [ "$MODE" = sim ]; then
 	FLAGS="$FLAGS -DSWEETMTL_SIM=1"
 fi
 
-$CC $FLAGS -I "$H/bridge/include" -o "$B/Contents/MacOS/SweetMTLDriver" \
+$CC $FLAGS -I "$H/bridge/include" -o "$BIN" \
 	"$H/SweetMTLDevice.m" "$H/SweetMTLObjects.m" \
 	-framework Foundation -framework Metal "$BRIDGE"
 
-cp "$H/Info.plist" "$B/Contents/Info.plist"
+cp "$H/Info.plist" "$PLIST"
+if [ "$MODE" = ios ]; then
+	# As in the system bundles' Info.plist.
+	plutil -insert CFBundleSupportedPlatforms -json '["iPhoneOS"]' "$PLIST"
+	plutil -insert MinimumOSVersion -string 16.0 "$PLIST"
+fi
 
 # The test tools (test/metal_compute.m, test/metal_render.m): MTLCreateSystemDefaultDevice() and
 # the MTL surface, linked against Metal.framework alone - the driver they run on is the bundle,

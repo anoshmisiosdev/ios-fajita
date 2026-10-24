@@ -107,8 +107,8 @@ jobs:
           for f in metal_compute metal_render scale_and_offset.metallib triangle.metallib; do
             [ -f "$f" ] && shasum -a 256 "$f" >> SHA256SUMS
           done
-          shasum -a 256 SweetMTLDriver.bundle/Contents/MacOS/SweetMTLDriver >> SHA256SUMS
-          file SweetMTLDriver.bundle/Contents/MacOS/SweetMTLDriver metal_compute metal_render
+          shasum -a 256 SweetMTLDriver.bundle/SweetMTLDriver >> SHA256SUMS
+          file SweetMTLDriver.bundle/SweetMTLDriver metal_compute metal_render
           ls -la
           cat SHA256SUMS
 
