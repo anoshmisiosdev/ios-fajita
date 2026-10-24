@@ -23,6 +23,7 @@
 #   QEMU_SECS=10800           how long qemu-ios runs (seconds, default 3 h)
 #   QEMU_ACCEL=auto|tcg|kvm|hvf
 #   SWEETGPU=0                GPU bring-up level for the phone (0 off; see FAJITA.md)
+#   SWEETGL=0                 1: backboardd loads /usr/lib/sweetgl.dylib (only once it is installed)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -313,7 +314,13 @@ cmd_phone() {
 	[[ -f research/ipsw-x/d22ap.adt ]] || warn "no research/ipsw-x/d22ap.adt (run ./fajita.sh ipsw): iOS will not know it is an iPhone X"
 	mkdir -p shim/out
 	python3 tools/mkadt.py shim/out/fajita.adt --highmem
-	local gpu=${SWEETGPU:-0} blobs=() accelargs=""
+	local gpu=${SWEETGPU:-0} blobs=() accelargs="" glargs=""
+	# backboardd only loads the GL library when asked (SWEETGL=1): nothing
+	# builds or installs /usr/lib/sweetgl.dylib yet, and a missing inserted
+	# library would stop backboardd, so a plain boot leaves it out.
+	if [[ ${SWEETGL:-0} != 0 ]]; then
+		glargs=" sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/lib/sweetgl.dylib"
+	fi
 	if [[ $gpu != 0 ]]; then
 		[[ -f $B/gpu-fw/a630_zap.mbn ]] || die "SWEETGPU=$gpu needs the GPU firmware: ./fajita.sh gpu-fw"
 		blobs=(--blob "GPU-SQE=$B/gpu-fw/a630_sqe.fw" --blob "GPU-GMU=$B/gpu-fw/a630_gmu.bin" --blob "GPU-ZAP=$B/gpu-fw/a630_zap.mbn")
@@ -327,7 +334,7 @@ cmd_phone() {
 		say "IOAcceleratorES on, Metal plugin ${SWEETMTL:-../../../usr/lib/sweetmtl/SweetMTLDriver} (sweetgpu=$gpu)"
 	fi
 	python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/fajita.adt shim/out/payload.bin ${blobs[@]+"${blobs[@]}"} \
-		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetusb=2 sweetgpu=$gpu cs_enforcement_disable=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/lib/sweetgl.dylib$accelargs" >/dev/null
+		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetusb=2 sweetgpu=$gpu cs_enforcement_disable=1$glargs$accelargs" >/dev/null
 	shim/build.sh ../shim/out/payload.bin >/dev/null
 	say "phone boot image: shim/out/shim-boot.img"
 	cat <<-EOF
@@ -350,5 +357,5 @@ phone)      cmd_phone ;;
 phone-test) cmd_phone_test ;;
 all)        cmd_deps || die "install the missing tools first"
             cmd_kernel; cmd_ipsw; cmd_root; cmd_qemu_smoke; cmd_qemu_ios ;;
-*)          sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
+*)          sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac
