@@ -57,6 +57,7 @@ The 6T's panel keeps its own frame memory. The display engine (DPU) only sends i
 
 - **Shim (`shim/fajita_disp.c`):** before drawing anything, it checks that the display engine is powered (dispcc GDSC and clocks). It then finds the command-mode CTL and the ping-pong block with tear check enabled, and sets **`PP_AUTOREFRESH_CONFIG`** so the DPU re-sends the frame on every tear-effect pulse. As in OnePlus's own display driver, `CTL_START` is never written while autorefresh runs. It also checks which source pipe fetches the splash buffer. After that, the panel behaves like sweet's video-mode panel for the shim, XNU's early console and every iOS frame.
 - **Kernel (patch 0083):** `AppleCLCD` reads the DPU state again. If autorefresh is off, it writes `CTL_START` once per vsync tick, skipping ticks where the previous transfer is still running. Boot-arg `fajita_dpu=0|1|2`: never touch the DPU, auto (default), or switch autorefresh off and always kick.
+- **Debug (patch 0090):** `fajita_dpu=3` kicks like 2 but writes `CTL_FLUSH` first (the CTL's interface, mixers and fetching pipes, as Linux `dpu_hw_ctl.c`; `fajita_flush=0x…` overrides the mask), and logs the CTL, SSPP, PP and mixer registers at setup and every 30 s, so they reach the USB live log. `FAJITA_DPU=3 ./fajita.sh phone` builds it.
 
 The first shim screen prints a `DPU` block (CTL, PP, autorefresh before/after, dispcc status). **If you see that screen at all, the display path works.**
 

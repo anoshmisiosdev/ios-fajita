@@ -1,0 +1,157 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 3abad4a..16545b3 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -95,7 +95,10 @@ enum {
+  * tick instead. Boot-arg fajita_dpu: 0 = never touch the DPU, 1 = auto
+  * (default: kick only if autorefresh is off), 2 = turn autorefresh off and
+  * kick per tick (CTL_START is never written while autorefresh runs, as in
+- * downstream SDE).
++ * downstream SDE), 3 = debug: as 2, but each kick writes CTL_FLUSH (the
++ * active pipes, mixers, CTL and interface, as dpu_hw_ctl.c; boot-arg
++ * fajita_flush overrides the mask) before CTL_START, and the CTL, SSPP, PP
++ * and mixer registers are logged at setup and every 30 s.
+  * Register offsets: Linux drivers/gpu/drm/msm/disp/dpu1 (dpu_4_0_sdm845.h,
+  * dpu_hw_ctl.c, dpu_hw_pingpong.c); MDP block at 0xae01000.
+  */
+@@ -107,10 +110,23 @@ enum {
+ #define FAJITA_MDP_SIZE                 0x8f000
+ #define FAJITA_CTL(n)                   (0x1000 + 0x200 * (n))
+ #define FAJITA_CTL_TOP                  0x14
++#define FAJITA_CTL_FLUSH                0x18
+ #define FAJITA_CTL_START                0x1c
+ #define FAJITA_PP(n)                    (0x70000 + 0x800 * (n))
+ #define FAJITA_PP_TEAR_CHECK_EN         0x00
+ #define FAJITA_PP_AUTOREFRESH           0x30            /* bit 31 enable, [15:0] frames */
++#define FAJITA_PP_SYNC_CONFIG_VSYNC     0x04
++#define FAJITA_PP_SYNC_CONFIG_HEIGHT    0x08
++#define FAJITA_PP_LINE_COUNT            0x2c
++#define FAJITA_LM(n)                    (0x44000 + 0x1000 * (n))
++#define FAJITA_LM_OUT_SIZE              0x04
++/* source pipes VIG0-3, DMA0-3 (dpu_4_0_sdm845.h) and their CTL_FLUSH bits */
++static const uint32_t fajita_sspp[8] = {0x4000, 0x6000, 0x8000, 0xa000,
++	                                0x24000, 0x26000, 0x28000, 0x2a000};
++static const uint8_t fajita_sspp_flush[8] = {0, 1, 2, 18, 11, 12, 24, 25};
++/* CTL_LAYER(LM_n) offsets and LM_n flush bits */
++static const uint8_t fajita_layer_off[6] = {0x00, 0x04, 0x08, 0x0c, 0x10, 0x24};
++static const uint8_t fajita_lm_flush[6] = {6, 7, 8, 9, 10, 20};
+ 
+ class IOMobileFramebuffer : public IOService {
+ 	OSDeclareDefaultStructors(IOMobileFramebuffer);
+@@ -148,9 +164,12 @@ public:
+ 	uint32_t      fFadeStep;      /* fade-out steps done while off */
+ 	volatile uint32_t *fDpuCtl;   /* fajita: active command-mode CTL, kicked per tick */
+ 	uint64_t      fDpuKicks, fDpuBusy;
++	uintptr_t     fDpuMdp;        /* fajita_dpu=3: MDP mapping for the register log */
++	uint32_t      fDpuFlush;      /* fajita_dpu=3: CTL_FLUSH mask written before each kick */
+ 
+ 	void          dpuSetup(void);
+ 	void          dpuKick(void);
++	void          dpuDump(void);
+ 
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ 	void addClient(IOMobileFramebufferUserClient *client);
+@@ -295,19 +314,80 @@ AppleCLCD::dpuSetup(void)
+ 		IOLog("FAJITA DPU: no command-mode CTL found (video mode?); no kick\n");
+ 		return;
+ 	}
+-	if (autorefresh && mode != 2) {
++	if (autorefresh && mode == 1) {
+ 		IOLog("FAJITA DPU: hardware autorefresh is on (shim); no kick needed\n");
+ 		return;
+ 	}
+ 	if (autorefresh) {
+-		/* fajita_dpu=2: manual kicks only, so switch autorefresh off first. */
++		/* fajita_dpu=2/3: manual kicks only, so switch autorefresh off first. */
+ 		*(volatile uint32_t *)(m + FAJITA_PP(arPP) + FAJITA_PP_AUTOREFRESH) = 0;
+ 		__asm__ volatile ("dsb sy" ::: "memory");
+ 		IODelay(20000);         /* let an in-flight autorefresh frame finish */
+ 	}
+ 	fDpuCtl = ctl;
+-	IOLog("FAJITA DPU: kicking CTL_START every vsync tick (%s)\n",
+-	    mode == 2 ? "fajita_dpu=2" : "autorefresh off");
++	if (mode == 3) {
++		/* Flush what this CTL drives: its interface, CTL, mixers and their pipes. */
++		uint32_t top = ctl[FAJITA_CTL_TOP / 4];
++		uint32_t intf = (top >> 4) & 0xf;       /* 1 = INTF_0 ... 4 = INTF_3 */
++		uint32_t mask = 1u << 17;
++		if (intf >= 1 && intf <= 4) {
++			mask |= 1u << (32 - intf);
++		}
++		for (int l = 0; l < 6; l++) {
++			if (ctl[fajita_layer_off[l] / 4] != 0) {
++				mask |= 1u << fajita_lm_flush[l];
++			}
++		}
++		for (int n = 0; n < 8; n++) {
++			if (*(volatile uint32_t *)(m + fajita_sspp[n] + 0x14) != 0) {   /* SRC0_ADDR */
++				mask |= 1u << fajita_sspp_flush[n];
++			}
++		}
++		PE_parse_boot_argn("fajita_flush", &mask, sizeof(mask));
++		fDpuFlush = mask;
++		fDpuMdp = m;
++		dpuDump();
++	}
++	IOLog("FAJITA DPU: kicking CTL_START every vsync tick (%s), flush 0x%08x\n",
++	    mode == 3 ? "fajita_dpu=3" : mode == 2 ? "fajita_dpu=2" : "autorefresh off", fDpuFlush);
++}
++
++/* fajita_dpu=3: the display pipe as ABL left it and as our kicks see it. */
++void
++AppleCLCD::dpuDump(void)
++{
++	uintptr_t m = fDpuMdp;
++	if (m == 0) {
++		return;
++	}
++#define R(off) (*(volatile uint32_t *)(m + (off)))
++	for (int n = 0; n < 5; n++) {
++		uintptr_t c = FAJITA_CTL(n);
++		IOLog("FAJITA DPU: CTL%d top %08x flush %08x start %08x layer %08x %08x %08x %08x %08x %08x\n",
++		    n, R(c + FAJITA_CTL_TOP), R(c + FAJITA_CTL_FLUSH), R(c + FAJITA_CTL_START),
++		    R(c + 0x00), R(c + 0x04), R(c + 0x08), R(c + 0x0c), R(c + 0x10), R(c + 0x24));
++	}
++	for (int n = 0; n < 8; n++) {
++		uintptr_t p = fajita_sspp[n];
++		if (R(p + 0x14) == 0) {
++			continue;
++		}
++		/* SRC_SIZE, SRC_XY, OUT_SIZE, OUT_XY, SRC0_ADDR, YSTRIDE0, FORMAT, UNPACK, OP_MODE */
++		IOLog("FAJITA DPU: SSPP%d size %08x xy %08x out %08x oxy %08x addr %08x ystride %08x fmt %08x unpack %08x op %08x\n",
++		    n, R(p + 0x00), R(p + 0x08), R(p + 0x0c), R(p + 0x10), R(p + 0x14),
++		    R(p + 0x24), R(p + 0x30), R(p + 0x34), R(p + 0x38));
++	}
++	for (int n = 0; n < 4; n++) {
++		uintptr_t p = FAJITA_PP(n);
++		IOLog("FAJITA DPU: PP%d te %08x vsync %08x height %08x line %08x autorefresh %08x\n",
++		    n, R(p + FAJITA_PP_TEAR_CHECK_EN), R(p + FAJITA_PP_SYNC_CONFIG_VSYNC),
++		    R(p + FAJITA_PP_SYNC_CONFIG_HEIGHT), R(p + FAJITA_PP_LINE_COUNT),
++		    R(p + FAJITA_PP_AUTOREFRESH));
++	}
++	IOLog("FAJITA DPU: LM out %08x %08x; kicks %llu busy %llu\n",
++	    R(FAJITA_LM(0) + FAJITA_LM_OUT_SIZE), R(FAJITA_LM(1) + FAJITA_LM_OUT_SIZE),
++	    fDpuKicks, fDpuBusy);
++#undef R
+ }
+ 
+ /* One frame transfer to the panel RAM, unless the previous one still runs. */
+@@ -323,10 +403,18 @@ AppleCLCD::dpuKick(void)
+ 		return;
+ 	}
+ 	__asm__ volatile ("dsb sy" ::: "memory");      /* pixels before the kick */
++	if (fDpuFlush != 0) {
++		/* fajita_dpu=3: latch the pipe configuration, then start (dpu_hw_ctl.c order) */
++		ctl[FAJITA_CTL_FLUSH / 4] = fDpuFlush;
++		__asm__ volatile ("dsb sy" ::: "memory");
++	}
+ 	ctl[FAJITA_CTL_START / 4] = 1;
+ 	if ((++fDpuKicks % 3600) == 0) {
+ 		IOLog("FAJITA DPU: %llu kicks, %llu skipped busy\n", fDpuKicks, fDpuBusy);
+ 	}
++	if (fDpuMdp != 0 && (fDpuKicks % 1800) == 0) {
++		dpuDump();
++	}
+ }
+ 
+ void

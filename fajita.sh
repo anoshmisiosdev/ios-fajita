@@ -24,6 +24,7 @@
 #   QEMU_ACCEL=auto|tcg|kvm|hvf
 #   SWEETGPU=0                GPU bring-up level for the phone (0 off; see FAJITA.md)
 #   SWEETGL=0                 1: backboardd loads /usr/lib/sweetgl.dylib (only once it is installed)
+#   FAJITA_DPU=               fajita_dpu boot-arg for the phone (3 = DPU register log + CTL_FLUSH kicks)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -334,7 +335,7 @@ cmd_phone() {
 		say "IOAcceleratorES on, Metal plugin ${SWEETMTL:-../../../usr/lib/sweetmtl/SweetMTLDriver} (sweetgpu=$gpu)"
 	fi
 	python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/fajita.adt shim/out/payload.bin ${blobs[@]+"${blobs[@]}"} \
-		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetusb=2 sweetgpu=$gpu cs_enforcement_disable=1$glargs$accelargs" >/dev/null
+		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetusb=2 sweetgpu=$gpu cs_enforcement_disable=1$glargs$accelargs${FAJITA_DPU:+ fajita_dpu=$FAJITA_DPU}" >/dev/null
 	shim/build.sh ../shim/out/payload.bin >/dev/null
 	say "phone boot image: shim/out/shim-boot.img"
 	cat <<-EOF
@@ -357,5 +358,5 @@ phone)      cmd_phone ;;
 phone-test) cmd_phone_test ;;
 all)        cmd_deps || die "install the missing tools first"
             cmd_kernel; cmd_ipsw; cmd_root; cmd_qemu_smoke; cmd_qemu_ios ;;
-*)          sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//' ;;
+*)          sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac
