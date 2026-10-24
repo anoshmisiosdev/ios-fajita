@@ -24,12 +24,15 @@ B=$O/SweetMTLDriver.bundle
 D=/usr/lib/sweetmtl
 [ -d "$B" ] || { echo "run ./build.sh first"; exit 1; }
 
-FILES="$O/metal_compute $O/scale_and_offset.metallib $O/libvulkan_freedreno.dylib"
+# Names only: $O may contain spaces (e.g. "Application Support"), so the
+# loops below build each path quoted instead of word-splitting a path list.
+FILES="metal_compute scale_and_offset.metallib libvulkan_freedreno.dylib"
 
 if [ "${ADB:-0}" = 1 ]; then
 	adb shell "mkdir -p $D"
 	adb push "$B" "$D/" >/dev/null
-	for f in $FILES; do
+	for n in $FILES; do
+		f=$O/$n
 		[ -f "$f" ] && adb push "$f" "$D/" >/dev/null
 	done
 	adb shell "chmod -R a+rX $D && chmod a+x $D/metal_compute 2>/dev/null; ls -l $D"
@@ -40,7 +43,8 @@ else
 	mkdir -p "$R$D"
 	rm -rf "$R$D/SweetMTLDriver.bundle"
 	cp -R "$B" "$R$D/"
-	for f in $FILES; do
+	for n in $FILES; do
+		f=$O/$n
 		[ -f "$f" ] && cp "$f" "$R$D/"
 	done
 	chmod a+x "$R$D/metal_compute" 2>/dev/null || true

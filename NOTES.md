@@ -1,5 +1,29 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> 2026-10-24 00:13: Metal load test (sweetaccel=1, no GPU): service seen, driver never created <<<
+- Installed CI artifacts into `build/ios16-root.img` (macOS `hdiutil attach -imagekey
+  diskimage-class=CRawDiskImage -owners off`, then img2simg in the Lima VM):
+  `/usr/lib/sweetmtl/` = SweetMTLDriver.bundle (sweetmtl-bridge run 39886511341,
+  sweetmtl-driver-ios), metal_compute, metal_render, scale_and_offset/triangle.metallib,
+  libvulkan_freedreno.dylib (sweetvk run 39878616562). All LC_BUILD_VERSION platform 2
+  (iOS) minos 16.0, ad-hoc signed. Reflashed userdata (401 s; first `fastboot boot`
+  after the flash hung until a USB replug, as before).
+- `tools/sweetmtl/push.sh` word-split its file list, so with "Application Support"
+  in the path it copied an unrelated host file `~/Library/Application` into the image
+  (removed). Fixed: loops over names and quotes each path.
+- Boot 00:13:21, cmdline as the home-screen image + `sweetaccel=1
+  sweetmtl=../../../usr/lib/sweetmtl/SweetMTLDriver sweetmtlclass=SweetMTLDevice
+  sweetsample=backboardd sweetiolog=backboardd`: backboardd `matching1 IOAcceleratorES
+  -> IOAcceleratorES` (~200x, was `-> none`), `AGXAccelerator -> none` (2x); 33 swaps
+  as before (CPU renderer, UI up); no `sweetmtl:` line at all although backboardd's
+  stderr is captured (`|backboardd| objc[57]: ...`), so `-initWithAcceleratorPort:`
+  was never called in backboardd.
+- Shared cache strings: "MetalPluginName"/"MetalPluginClassName" and "IOAcceleratorES"
+  are in Metal (and IOGPU); QuartzCore has both "IOAcceleratorES" and "AGXAccelerator".
+  Guess (not verified): CoreAnimation only takes its Metal renderer when an
+  AGXAccelerator exists, so it never asks Metal for a device. Testing the driver
+  needs a direct Metal client (`/usr/lib/sweetmtl/metal_compute`) run on the phone.
+
 ## >>> 2026-10-23 ~23:59: Apple-logo stall fixed (MobileGestalt UDID inputs in the ADT) <<<
 - Symptom: Apple logo forever, backboardd 4-5 swaps, SpringBoard alive, no crash
   (1 and 8 CPUs). 8-core image: `cpus=8 sweetfb_noconsole=1 sweetsample=-`, no
