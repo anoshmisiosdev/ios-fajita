@@ -1,5 +1,25 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> 2026-10-24 11:18: A630 compute dispatch completes on the 6T (no fault); output still wrong <<<
+- `5bcefbe`: gpu_alloc cleans freshly KMA_ZERO'd buffers. Before it the CP marker read
+  c0ffee01 on one boot and 0 on the next with the same code (dirty zero lines written
+  back over the GPU's write). Marker reliable since.
+- `cc83408` quad-timeout address dump: FAR 0x66c777c0 matched none of shader 104560000,
+  ibo 104554000, ring 10454c000, fence 104550040, src VA 200000000 / dst 200024000 (PTEs
+  valid), descriptor base words correct. FARs differ per boot, always +0x7c0.
+- `b146a66`: SP_CS_TEX_SAMP/SP_CS_TEX_CONST now point at copies of the descriptors in the
+  IBO page (+0x100/+0x200), SP_CS_PVT_MEM_* size 0 (offsets from Mesa 23.1 a6xx.xml;
+  computerator a6xx.cc compared). Result: FAR **0x04554100 = 0x104554100 & 0xffffffff**,
+  i.e. our sampler base with the upper half dropped.
+- All 12 *_ADDR_MODE_CNTL offsets in 0086 match a6xx.xml. `4e9f8fb`: the ring writes the
+  11 per-block ADDR_MODE_CNTL = 1 again right before CP_SET_MARKER/the dispatch (no
+  CP_PROTECT is set up). Result (boot 11:18): **no quad timeout, no SMMU fault, fence
+  written** (`quad 0`), but `level 3 sample4 selftest: quad 0, MISMATCH (first [0] x 0
+  y 0: 00000000 want ff000000)`. So 64-bit address mode is lost between hw_init and the
+  dispatch (which register/when not yet known: the read-back only runs on a timeout).
+- Reading results: recovery adb sometimes needs "Enable ADB" in the Lineage recovery
+  menu again; `fastboot boot` right after a fresh boot may need a USB replug.
+
 ## >>> 2026-10-24 ~02:18: Adreno 630 bring-up on the 6T: levels 1-2 pass, level 3 CP works, compute self-test faults <<<
 - Firmware read-only from the phone: `fastboot reboot recovery` (Lineage recovery,
   userdebug, root adb after enabling ADB in its menu), `vendor_b` mounted
