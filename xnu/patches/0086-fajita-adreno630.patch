@@ -1,9 +1,9 @@
 diff --git a/bsd/dev/sweet_gpu_a6xx.c b/bsd/dev/sweet_gpu_a6xx.c
 new file mode 100644
-index 0000000..8703ba2
+index 0000000..f8195d6
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_a6xx.c
-@@ -0,0 +1,2723 @@
+@@ -0,0 +1,2730 @@
 +/*
 + * Adreno 630 (A630, SDM845, OnePlus 6T "fajita") power-up and kernel client.
 + *
@@ -604,6 +604,13 @@ index 0000000..8703ba2
 +		}
 +		uint64_t pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)*va));
 +		if (pa >= 0x80000000ull && pa + size <= 0x200000000ull) {
++			/*
++			 * KMA_ZERO zeroed the buffer through the cached mapping:
++			 * write those lines out now. Otherwise a later clean of a
++			 * still-dirty line overwrites what the GPU wrote (the 6T's
++			 * CP marker read c0ffee01 on one boot and 0 on the next).
++			 */
++			flush_dcache64((addr64_t)pa, size, TRUE);
 +			return pa;
 +		}
 +		printf("SWEET GPU: gpu_alloc got PA %llx outside the identity map\n", pa);
