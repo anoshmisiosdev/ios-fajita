@@ -1,9 +1,9 @@
 diff --git a/bsd/dev/sweet_gpu_a6xx.c b/bsd/dev/sweet_gpu_a6xx.c
 new file mode 100644
-index 0000000..f8195d6
+index 0000000..5076db2
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_a6xx.c
-@@ -0,0 +1,2730 @@
+@@ -0,0 +1,2754 @@
 +/*
 + * Adreno 630 (A630, SDM845, OnePlus 6T "fajita") power-up and kernel client.
 + *
@@ -224,6 +224,10 @@ index 0000000..f8195d6
 +#define R_HLSQ_CS_CNTL_1		0xb998u
 +#define R_SP_CS_OBJ_START		0xa9b4u
 +#define R_SP_CS_TEX_COUNT		0xa9bau
++#define R_SP_CS_PVT_MEM_PARAM		0xa9b6u	/* + ADDR (64), SIZE */
++#define R_SP_CS_PVT_MEM_HW_STACK_OFFSET	0xa9bdu
++#define R_SP_CS_TEX_SAMP		0xa9e2u
++#define R_SP_CS_TEX_CONST		0xa9e6u
 +#define R_SP_CS_IBO			0xa9f2u
 +#define R_SP_CS_IBO_COUNT		0xaa00u
 +#define R_HLSQ_CS_NDRANGE_0		0xb990u
@@ -2039,7 +2043,27 @@ index 0000000..f8195d6
 +			emit(x->tex[i]);
 +		}
 +		emit(pkt4(R_SP_CS_TEX_COUNT, 1)); emit(ntex);
++
++		/*
++		 * Point the texture unit's own descriptor bases at copies of the
++		 * same state, as Mesa's fd6_emit_textures does. Left unprogrammed
++		 * they keep stale values, and the 6T's sample4 self-test faulted
++		 * at a different address on every boot (always +0x7c0).
++		 * IBO page layout: IBO descriptor at 0, samplers at 0x100,
++		 * texture constants at 0x200.
++		 */
++		memcpy((void *)(g_ibo_va + 0x100), x->samp, 16 * ntex);
++		memcpy((void *)(g_ibo_va + 0x200), x->tex, 64 * ntex);
++		flush_dcache64((addr64_t)g_ibo_pa + 0x100, 0x100 + 64 * ntex, TRUE);
++		emit(pkt4(R_SP_CS_TEX_SAMP, 2));
++		emit((uint32_t)(g_ibo_pa + 0x100)); emit((uint32_t)((g_ibo_pa + 0x100) >> 32));
++		emit(pkt4(R_SP_CS_TEX_CONST, 2));
++		emit((uint32_t)(g_ibo_pa + 0x200)); emit((uint32_t)((g_ibo_pa + 0x200) >> 32));
 +	}
++	/* No private memory: size 0, base at the otherwise unused trap page. */
++	emit(pkt4(R_SP_CS_PVT_MEM_PARAM, 4));
++	emit(0); emit((uint32_t)g_trap_pa); emit((uint32_t)(g_trap_pa >> 32)); emit(0);
++	emit(pkt4(R_SP_CS_PVT_MEM_HW_STACK_OFFSET, 1)); emit(0);
 +	if (nibo) {
 +		emit(pkt7(CP_LOAD_STATE6_FRAG, 3));
 +		emit((ST6_IBO << 14) | (SS6_INDIRECT << 16) |
