@@ -74,7 +74,9 @@ def main():
     gmu_size = os.path.getsize(gmu)
     if gmu_size > 0x8000:
         die(f'a630_gmu.bin is {gmu_size} bytes; the legacy GMU ITCM holds 0x8000')
-    ver = struct.unpack_from('<I', sqe_data, 0)[0] & 0xfff
+    # dword 0 is a header the kernel does not upload (mainline adreno_fw_create_bo);
+    # the version is the low 12 bits of dword 1.
+    ver = struct.unpack_from('<I', sqe_data, 4)[0] & 0xfff
     print(f'a630_sqe.fw: {len(sqe_data)} bytes, version {ver:#x}'
           f'{"" if ver >= 0x190 else " (older than 1.90: mainline Linux would refuse it)"}')
     print(f'a630_gmu.bin: {gmu_size} bytes')

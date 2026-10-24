@@ -1,9 +1,9 @@
 diff --git a/bsd/dev/sweet_gpu_a6xx.c b/bsd/dev/sweet_gpu_a6xx.c
 new file mode 100644
-index 0000000..2be4294
+index 0000000..4737b42
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_a6xx.c
-@@ -0,0 +1,2673 @@
+@@ -0,0 +1,2677 @@
 +/*
 + * Adreno 630 (A630, SDM845, OnePlus 6T "fajita") power-up and kernel client.
 + *
@@ -2309,8 +2309,11 @@ index 0000000..2be4294
 +
 +/*
 + * The SQE firmware is copied into a fresh contiguous page below 8 GB, so
-+ * CP_SQE_INSTR_BASE is inside the SMMU identity map.  Its first dword's low
-+ * 12 bits are the version (mainline expects >= 0x190).
++ * CP_SQE_INSTR_BASE is inside the SMMU identity map.  As in mainline
++ * (adreno_fw_create_bo), the file's first dword is a header and is not
++ * uploaded; the version is the low 12 bits of the first uploaded dword
++ * (mainline needs >= 0x190).  Uploading the header too left the CP stuck
++ * before CP_ME_INIT on the 6T (2026-10-24, RPTR 0 WPTR 13).
 + */
 +static bool
 +load_sqe(void)
@@ -2324,13 +2327,14 @@ index 0000000..2be4294
 +		printf("SWEET GPU: SQE firmware size %u out of range\n", len);
 +		return false;
 +	}
++	len -= 4;
 +	vm_size_t size = (len + PAGE_MASK) & ~PAGE_MASK;
 +	vm_offset_t va;
 +	uint64_t dst = gpu_alloc(&va, size);
 +	if (dst == 0) {
 +		return false;
 +	}
-+	memcpy((void *)va, (const void *)phystokv(pa), len);
++	memcpy((void *)va, (const void *)phystokv(pa + 4), len);
 +	flush_dcache64((addr64_t)dst, size, TRUE);
 +	g_sqe_pa = dst;
 +	uint32_t ver = *(volatile uint32_t *)va & 0xfffu;
