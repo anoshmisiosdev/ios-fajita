@@ -1,9 +1,9 @@
 diff --git a/bsd/dev/sweet_gpu_a6xx.c b/bsd/dev/sweet_gpu_a6xx.c
 new file mode 100644
-index 0000000..c3e5ff1
+index 0000000..8703ba2
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_a6xx.c
-@@ -0,0 +1,2699 @@
+@@ -0,0 +1,2723 @@
 +/*
 + * Adreno 630 (A630, SDM845, OnePlus 6T "fajita") power-up and kernel client.
 + *
@@ -2059,6 +2059,18 @@ index 0000000..c3e5ff1
 +	return kick();
 +}
 +
++/* The 4 KB page-table entry behind a GPU VA (0 outside the window). */
++static uint64_t
++gva_pte(uint64_t va)
++{
++	if (va < GVA_BASE || va - GVA_BASE >= (uint64_t)GVA_PAGES * PAGE_SIZE) {
++		return 0;
++	}
++	uint64_t i = (va - GVA_BASE) / 4096;
++	uint64_t *t = g_l3[i / 512];
++	return t != NULL ? t[i % 512] : 0;
++}
++
 +/*
 + * The engine behind sweet_gpu_quad: validate, map cache, emit sample4, poll
 + * the fence.  Caller holds no lock.  g_ready is not checked so the level 3
@@ -2152,6 +2164,18 @@ index 0000000..c3e5ff1
 +		g_ready = false;
 +		cp_state("quad timeout:");
 +		smmu_faults("quad timeout:");
++		/* Every address this dispatch uses, to match against the SMMU FAR. */
++		uint32_t *ibo = (uint32_t *)g_ibo_va;
++		printf("SWEET GPU: quad pa: shader %llx ibo %llx ring %llx fence %llx\n",
++		    (unsigned long long)g_ksample4_pa, (unsigned long long)g_ibo_pa,
++		    (unsigned long long)rb_pa, (unsigned long long)(g_scratch + 64));
++		printf("SWEET GPU: quad va: src %llx+%llx pte %llx, dst %llx+%llx pte %llx, drow %llx\n",
++		    (unsigned long long)q->src_va, (unsigned long long)slen,
++		    (unsigned long long)gva_pte(q->src_va),
++		    (unsigned long long)q->dst_va, (unsigned long long)dlen,
++		    (unsigned long long)gva_pte(q->dst_va), (unsigned long long)drow);
++		printf("SWEET GPU: quad desc: tex %08x %08x, dst tex %08x %08x, ibo %08x %08x\n",
++		    tex[4], tex[5], tex[20], tex[21], ibo[4], ibo[5]);
 +		printf("SWEET GPU: quad timed out, GPU service off until reboot\n");
 +	}
 +	lck_mtx_unlock(&sweet_gpu_vm_lock);
