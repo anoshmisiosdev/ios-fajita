@@ -137,6 +137,18 @@ fastboot boot shim/out/shim-boot.img
 - **After a hang,** boot recovery and run `tools/sweet-log-pull.sh logs/boot.txt`. It finds `userdata` by name.
 - **Touch starts 45 s after boot** (`sweettouchdelay`), so a hang there can't hide earlier logs.
 
+## USB networking on SDM845 (from bergamota)
+
+The ios-sweet USB gadget (`sweetusb=2`: CDC-ECM Ethernet, live kernel log, SSH) was written for sweet's SM7150. On SDM845 it needs the fixes [ry-diffusion/bergamota](https://github.com/ry-diffusion/bergamota) found on the Poco F1, an ios-sweet fork on the same xnu-8796 base and the same SoC. Patch `0089` carries their iOS 16-era `sweet_usb.c`, `sweet_smmu.c` (originally from anonbeat1/ios-sweet) and `SweetNetwork.cpp`, credited, with their Poco F1 checks widened to any SDM845 ADT (`qcom,sdm845`, which fajita's has):
+
+- no DWC3 soft reset (the QMP SuperSpeed PHY it needs is never restarted); the bootloader's GCTL and DEVSPD are kept (`sweetusbreset=1` forces the reset)
+- the UTMI clock drives the PIPE side, GUCTL1 forces the 2.0 clock, mainline sdm845 quirks
+- the QUSB2 power-down bit the bootloader leaves set is cleared by default (`sweetusbfix=0` turns that off)
+- the USB stream `0x740` gets an identity-mapped apps_smmu bank first: under the hypervisor an unmatched stream's first DMA would reset the phone
+- iOS sees the link as `ue0` at 192.168.7.2
+
+Bergamota uses `ssh root@192.168.7.2` and a live kernel log on UDP 5140 this way. Not yet run on a 6T: if the gadget does not enumerate, the `SWEET USB:` lines on screen say which step failed.
+
 ## What UniXNU-fajita found on real hardware
 
 [johnpanos/UniXNU-fajita](https://github.com/johnpanos/UniXNU-fajita) (UniXNU's 6T port, BSD-2-Clause-Patent; iPadOS 17.7.11 on XNU 23.6, booted through Mu-Silicium UEFI) has run XNU on a 6T: CPU, GIC, timer, IOKit, APFS, UFS root, launchd. Nothing here has booted on the phone yet, so their observations are the best evidence we have. Credit to them for all of it.
