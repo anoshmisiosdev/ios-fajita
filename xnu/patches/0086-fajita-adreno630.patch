@@ -1,9 +1,9 @@
 diff --git a/bsd/dev/sweet_gpu_a6xx.c b/bsd/dev/sweet_gpu_a6xx.c
 new file mode 100644
-index 0000000..5076db2
+index 0000000..d730d56
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_a6xx.c
-@@ -0,0 +1,2754 @@
+@@ -0,0 +1,2772 @@
 +/*
 + * Adreno 630 (A630, SDM845, OnePlus 6T "fajita") power-up and kernel client.
 + *
@@ -1963,6 +1963,22 @@ index 0000000..5076db2
 +	d[5] = (uint32_t)(pa >> 32);
 +}
 +
++/* The *_ADDR_MODE_CNTL registers (a6xx.xml): 1 = 64-bit addresses. */
++static const uint16_t addr_mode[] = {
++	0x0842,	/* CP */
++	0x0c01,	/* VSC */
++	0x8601,	/* GRAS */
++	0x8e05,	/* RB */
++	0x9e01,	/* PC */
++	0xbe05,	/* HLSQ */
++	0xa601,	/* VFD */
++	0x9601,	/* VPC */
++	0x0e00,	/* UCHE */
++	0xae01,	/* SP */
++	0xb601,	/* TPL1 */
++};
++#define ADDR_MODE_N	(sizeof(addr_mode) / sizeof(addr_mode[0]))
++
 +struct cs_extra {
 +	const uint32_t *consts;		/* nconst vec4s at c0 */
 +	uint32_t nconst;
@@ -2074,6 +2090,15 @@ index 0000000..5076db2
 +		emit(pkt4(R_SP_CS_IBO_COUNT, 1)); emit(nibo);
 +	}
 +
++	/*
++	 * Re-assert 64-bit addressing from the ring. On the 6T the sampler
++	 * fetch through SP_CS_TEX_SAMP faulted at the base's low 32 bits
++	 * (0x104554100 -> FAR 0x04554100) although hw_init had set every
++	 * ADDR_MODE_CNTL; the quad timeout reads them back.
++	 */
++	for (unsigned i = 0; i < ADDR_MODE_N; i++) {
++		emit(pkt4(addr_mode[i], 1)); emit(1);
++	}
 +	emit(pkt7(CP_SET_MARKER, 1)); emit(RM6_COMPUTE);
 +	emit(pkt4(R_HLSQ_CS_NDRANGE_0, 7));
 +	emit(3u | ((k->local[0] - 1) << 2) | ((k->local[1] - 1) << 12) |
@@ -2207,6 +2232,12 @@ index 0000000..5076db2
 +		    (unsigned long long)gva_pte(q->dst_va), (unsigned long long)drow);
 +		printf("SWEET GPU: quad desc: tex %08x %08x, dst tex %08x %08x, ibo %08x %08x\n",
 +		    tex[4], tex[5], tex[20], tex[21], ibo[4], ibo[5]);
++		printf("SWEET GPU: quad addr_mode CP %x VSC %x GRAS %x RB %x PC %x HLSQ %x "
++		    "VFD %x VPC %x UCHE %x SP %x TPL1 %x TSB %x\n",
++		    gr(addr_mode[0]), gr(addr_mode[1]), gr(addr_mode[2]), gr(addr_mode[3]),
++		    gr(addr_mode[4]), gr(addr_mode[5]), gr(addr_mode[6]), gr(addr_mode[7]),
++		    gr(addr_mode[8]), gr(addr_mode[9]), gr(addr_mode[10]),
++		    gr(R_RBBM_SECVID_TSB_ADDR_MODE_CNTL));
 +		printf("SWEET GPU: quad timed out, GPU service off until reboot\n");
 +	}
 +	lck_mtx_unlock(&sweet_gpu_vm_lock);
@@ -2410,20 +2441,7 @@ index 0000000..5076db2
 +	gw(R_RBBM_SECVID_TSB_TRUSTED_SIZE, 0);
 +	gw(R_RBBM_SECVID_TSB_ADDR_MODE_CNTL, 1);
 +
-+	static const uint16_t addr_mode[] = {
-+		0x0842,	/* CP */
-+		0x0c01,	/* VSC */
-+		0x8601,	/* GRAS */
-+		0x8e05,	/* RB */
-+		0x9e01,	/* PC */
-+		0xbe05,	/* HLSQ */
-+		0xa601,	/* VFD */
-+		0x9601,	/* VPC */
-+		0x0e00,	/* UCHE */
-+		0xae01,	/* SP */
-+		0xb601,	/* TPL1 */
-+	};
-+	for (unsigned i = 0; i < sizeof(addr_mode) / sizeof(addr_mode[0]); i++) {
++	for (unsigned i = 0; i < ADDR_MODE_N; i++) {
 +		gw(addr_mode[i], 1);
 +	}
 +
