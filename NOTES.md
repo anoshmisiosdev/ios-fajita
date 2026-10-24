@@ -1,5 +1,81 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> 2026-10-23: fajita first hardware run (observations only) <<<
+Host: macOS (Apple silicon), branch `fajita-gpu` at `347d00b`. Phone: OnePlus 6T
+running a LineageOS-based Android 15 (`ro.build.display.id` read once as
+`fajita-user 15 AP4A.250205.002 ea21274144`, after the run as
+`lineage_fajita-userdebug 15 AP4A.250205.002 ea21274144`; build date
+2025-03-25). Nothing was flashed or erased; every test was `fastboot boot`.
+
+**1. Host tools.** Installed with Homebrew: `bash` 5.3 (fajita.sh uses
+`declare -A`, which macOS's bash 3.2 lacks), `aarch64-elf-gcc` 16.2 (+ binutils
+2.47), `payload-dumper-go` 2.1.0. `mkbootimg` is not in Homebrew: AOSP
+`system/tools/mkbootimg` cloned to `build/src/mkbootimg` with a `build/bin/mkbootimg`
+wrapper; `build/bin/aarch64-linux-gnu-{gcc,objcopy,nm,readelf}` link to the
+`aarch64-elf-*` tools (the shim is freestanding). `/opt/homebrew/bin/bash ./fajita.sh deps`
+then warns only about the Linux-only root-image tools.
+
+**2. Fastboot.** `fastboot oem device-info`: `Device unlocked: true`,
+`Device critical unlocked: false`, `Verity mode: true`. `getvar current-slot`: `b`.
+`product: sdm845`; slot-retry-count a/b 6/6, slot-unbootable a/b no/no.
+
+**3. Device tree.** Phone runs Lineage, not OxygenOS, so no OTA was used. With
+Rooted debugging, read-only: `adb pull /dev/block/by-name/boot_b` (64 MiB, sha256
+`8942495b…fa4a67` identical on phone and host) and `adb pull /sys/firmware/fdt`
+(live FDT, 564696 bytes); kept in `build/phone/`, not committed.
+- `fajita-dtb.py extract`: header v1, page 4096, Image.gz with 3 DTBs, msm-id
+  0x141 0x20000 (v2), 0x141 0x20001 (v2.1), 0x141 0x10000 (v1), board-id all 0.
+- `check` on the boot.img DTBs and on the live FDT: splash
+  `cont_splash_region@9d400000 0x9d400000 + 0x2400000` as expected; reserved-memory
+  identical in both; **RESULT: MISMATCH** only because of memory banks. Boot.img DTB
+  memory node is empty (filled by ABL). Live FDT: `0x80000000 + 0x100000000`
+  (4.00 GiB) and `0x180000000 + 0xfc8a0000` (3.95 GiB); the port's kernel RAM
+  `0x100000000 + 0xc0000000` crosses the bank split at `0x180000000` (banks are
+  adjacent; no reserved region there). For this run the kernel got 2 GiB inside the
+  first bank (`mkadt.py --highmem --mem-size 0x80000000`). The 3 GiB default needs
+  `fajita-dtb.py`/`mkadt.py` to handle the two banks before the full iOS boot.
+
+**4. Shim only.** `shim/build.sh`, `fastboot boot shim/out/shim-boot.img`
+(Sending 1232 KB OKAY, Booting OKAY). Screen (user photo): red, `SHIM fajita
+(OnePlus 6T) xnu loader`, `DPU no tear check`, `DPU CTL n=00000000 top=00020020`,
+`DPU PP n=FFFFFFFF sync=00000000`, `DPU AR was=00000000 now=00000000`,
+`DPU PIPE n=00000000 y` - output stops mid-line there; no DISPCC/PP LINE/UFS lines
+ever appeared, and the screen stayed frozen like that (user: no change, no reset).
+When the user next reconnected the phone it was running Android (adb), not in fastboot;
+how it left the shim was not observed.
+
+**5. Read-only kernel test.** `FAJITA_BRANCH=fajita-gpu fajita.sh kernel`: CI run
+40053965456 (`fe7c622`, success), `SHA256SUMS` OK, build log shows 0080-0089 applied
+(skipped only blacktop's TrustCache/iobuffermemd/skywalk/syntax_checker patches).
+Test image built as `fajita.sh phone-test` does but with `--mem-size 0x80000000`
+(same cmdline: `... rd=ufsroot0 wdt=-1 sweetlog=0 sweetusb=2 sweetgpu=0`), 17588 KB.
+`adb reboot bootloader`, `fastboot boot shim/out/shim-boot-test.img` at 22:09:19:
+Sending OKAY, Booting OKAY.
+- **USB gadget enumerated ~10 s later** on the Mac as `en13`, hardware port
+  "Sweet iOS (USB Ethernet)", USB vendor "ios-sweet" 0x1209 / product 1, host MAC
+  `02:00:5e:77:ee:01`. Before an address was set, `ping 192.168.7.2` 0/3. After
+  `sudo ifconfig en13 inet 192.168.7.1 netmask 255.255.255.0 alias` (user ran it):
+  `ping 192.168.7.2` 3/3, ~1.5 ms; phone MAC `02:00:5e:77:ee:02`.
+- `tools/sweet-usbnet.sh` is Linux-only (`ip`, `nmcli`); the log was read with
+  `nc -ul 5140` instead. It only streams new lines, so earlier boot output (the
+  SWEET UFS / SWEET USB bring-up lines) was not captured, and the screen went black
+  before it could be photographed.
+- Captured log (159 lines, ~5 min): repeating root-mount attempts `mount(18)`..`mount(40)`:
+  `BSD root: ufsroot0, major 1, minor 0` / `hfs_ValidateHFSPlusVolumeHeader: unknown
+  Volume Signature : 801b` / `hfs_mount: hfs_mountfs returned error=22` / `cannot
+  mount root, errno = 19`. Also `SMP --- sample 0`,
+  `FAJITA DPU: 7200 kicks, 0 skipped busy`, later `10800 kicks, 0 skipped busy`,
+  `SWEET USB: ue0 rx 134 tx 46 frames; cfg 1 alt 1 txbusy 0 txq 0; rx trb
+  00000800/00000c13 act 1, tx trb 00000000/00000c12 act 0; DSTS 0x00828a50` (later rx
+  151 tx 56, DSTS 0x00836598), and `SWEET HID: touch N down/up at X,Y` events for
+  ids 0-4 (e.g. `touch 0 down at 160,953`, `touch 3 down at 583,2326 edge`) while
+  the user handled the phone.
+- Screen: user reported it **black** during this run (kicks were being counted).
+- Phone still answered ping when the test was ended.
+
+**6. Back to Android.** User held Power + Volume Down to fastboot; `fastboot reboot`
+(slot b): `sys.boot_completed=1`, `ro.boot.slot_suffix=_b`.
+
 ## >>> fajita-gpu branch (OnePlus 6T, Adreno 630), 2026-10-21 - read the GPU section of FAJITA.md first <<<
 - Branch `fajita-gpu` = `fajita` + 0085 (ios-sailfish GPU plumbing: SweetGPU user
   client, `bsd/dev/sweet_gpu.h`, IOSurface changes, `sweet_rpmh_cmd_db_aux`) + 0086
