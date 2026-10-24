@@ -1,5 +1,27 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> 2026-10-23 ~23:59: Apple-logo stall fixed (MobileGestalt UDID inputs in the ADT) <<<
+- Symptom: Apple logo forever, backboardd 4-5 swaps, SpringBoard alive, no crash
+  (1 and 8 CPUs). 8-core image: `cpus=8 sweetfb_noconsole=1 sweetsample=-`, no
+  `-enable_kprintf_spam` (boots fine on 8 cores).
+- Symbolicated with blacktop `ipsw` 3.1.720 on the 20H392 SystemOS cryptex
+  (`hdiutil attach -imagekey diskimage-class=CRawDiskImage`; the sampler's `slide`
+  is the shared-cache slide). SpringBoard t0: `-[LSApplicationRecord _init...]` ->
+  `_LSContextInitWithOptions` -> `_LSCopyServerStore` -> sync NSXPC -> mach_msg.
+- `sweetsample=lsd,SpringBoard`: lsd t2 in
+  `__LAUNCH_SERVICES_CLIENTS_ARE_WAITING_FOR_THE_DATABASE_TO_FINISH_SEEDING__`; t1
+  seeding: `MIInstalledInfoGatherer` -> `installationIdentityForBundle:` ->
+  `_GenerateBuiltInAppInstallSessionID` (InstalledContentLibrary) ->
+  `MGCopyAnswer("re6Zb+zwFKJNlkQTUeT+/w", NULL)` (UniqueDeviceID, from
+  disassembly) -> libMobileGestalt semaphore wait.
+- `sweetiolog=lsd`: 20x { `IODeviceTree:/chosen`, IONameMatch sdio / wlan /
+  marconi-wifi -> none, IOServiceMatched IONetworkController -> notify }.
+- Fix (`tools/mkadt.py`): root `serial-number` 'FAJITA6T0001', `arm-io/wlan` and
+  `arm-io/bluetooth` with fixed locally administered `local-mac-address`
+  02:fa:11:7a:00:01 / :02. Boot 23:56:28: lsd `IONameMatch wlan -> IOPlatformDevice`,
+  `bluetooth -> IOPlatformDevice`, no retry loop; SpringBoard creates a 1125x2436
+  surface (`SWEET SURF: SpringBoard create id 12 ... fmt 0x77333072`), swaps reach 34.
+
 ## >>> 2026-10-23 late night: 6T display FIXED (shim enables PP0 tear check) <<<
 - `fajita_dpu=3` (patch 0090, CI run 40069379881 on `ced3e7d`, success) logged
   the DPU as ABL leaves it: `CTL0 top 00020020 layer 01000005` (cmd mode, INTF_1,

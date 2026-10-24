@@ -32,6 +32,12 @@ GICR, GICR_SIZE = 0x17a60000, 0x100000
 # cont_splash_mem: splash@9d400000 (0x2400000), left lit by ABL
 FB, FB_SIZE = 0x9d400000, 0x2400000
 SWEET_ECID = 0x46414a4954410001  # 'FAJITA' + 1, synthetic
+# MobileGestalt's UniqueDeviceID needs the serial number and the Wi-Fi and
+# Bluetooth MACs. Synthetic and fixed (stable UDID), locally administered,
+# distinct from the USB gadget's 02:00:5e:77:ee:0x.
+SWEET_SERIAL = 'FAJITA6T0001'
+WIFI_MAC = bytes.fromhex('02fa117a0001')
+BT_MAC = bytes.fromhex('02fa117a0002')
 FB_W, FB_H, FB_STRIDE = 1080, 2340, 1080 * 4
 # Internal UFS host (ufshc@1d84000 "ufs_mem"); QEMU virt has none
 UFS, UFS_SIZE = 0x01d84000, 0x3000
@@ -188,7 +194,13 @@ def build(seed=None, qemu=False, highmem=False, mem_size=None):
             ('compatible', cstr('sweet,display')),
             ('canvas-width', u32(1125)),
             ('canvas-height', u32(2436)),
-        ])])
+        ]),
+        # No radios. MobileGestalt (UniqueDeviceID, e.g. lsd seeding its
+        # database on first boot) looks up a service named sdio/wlan/
+        # marconi-wifi for the Wi-Fi MAC and otherwise waits forever for an
+        # IONetworkController (seen 2026-10-23 with sweetiolog=lsd).
+        node('wlan', [ph(), ('local-mac-address', WIFI_MAC)]),
+        node('bluetooth', [ph(), ('local-mac-address', BT_MAC)])])
 
     fbcon = node('sweet-fbcon', [
         ph(),
@@ -233,6 +245,7 @@ def build(seed=None, qemu=False, highmem=False, mem_size=None):
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
         ('manufacturer', cstr('Apple Inc.')),
+        ('serial-number', cstr(SWEET_SERIAL)),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
     ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if qemu else [ufs]))
