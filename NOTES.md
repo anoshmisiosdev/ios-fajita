@@ -1,5 +1,32 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> 2026-10-23 night: first iOS boot on the 6T - userland up, screen black <<<
+User approved erasing userdata. Observations:
+- Backups first (adb root, read-only, sha256 verified against the phone):
+  persist 32 MiB, modemst1/modemst2/fsg 2 MiB, fsc 128 KiB, boot_a/boot_b 64 MiB,
+  kept out of git (local `build/phone/backup/`). userdata is 118112366592 bytes
+  (`partition-size:userdata 0x1B800BB000`).
+- `fastboot -S 512M flash userdata build/ios16-root.simg`: 24 sparse chunks, each
+  "Sending ... OKAY [~18.5 s]" then "Writing 'userdata' OKAY [0.001 s]"; Finished
+  431.064 s, exit 0.
+- The `fastboot boot` right after the flash hung at "Sending 'boot.img'" with the
+  fastboot menu still on screen; `getvar` then hung too (macOS: `could not clear
+  input pipe; result e00002d6`). After ~2 min more and unplugging/replugging USB,
+  fastboot answered; `fastboot boot shim/out/shim-boot.img` (3 GiB, the b52f8ca
+  cmdline without sweetgl) sent in 0.408 s, Booting OKAY at 23:03:25, slot b.
+- en13 (USB Ethernet) appeared ~10 s later; with 192.168.7.1 set by the user,
+  `ping 192.168.7.2` 3/3 ~1.5 ms. Port 22 closed (no ssh in this root).
+- Live log (`nc -ul 5140`, ~4 min, 694 lines): the HFS+ root mounted (no mount
+  retries); launchd ran ~88 distinct programs (`exec xpcproxy`, bluetoothd,
+  fairplayd.H2, tccd, wcd, ReportCrash, ManagedSettingsAgent, askpermissiond, ...);
+  SMP sampler lines for **SpringBoard[26]** and **backboardd[56]**; `SWEET AKS:`
+  keystore calls returning 0x0 for many daemons; backboardd repeatedly matches
+  `IOAcceleratorES` / `IOAcceleratorESLegacy` -> none (expected with sweetgpu=0,
+  no sweetaccel). No panic or watchdog lines. `SWEET USB: ue0 rx 281 tx 537`.
+- Screen: **black** (user). No `FAJITA DPU` kick line appeared in this capture.
+- The earlier boot output is not in the stream, so the root-mount and SWEET UFS
+  lines were not captured.
+
 ## >>> 2026-10-23 late: iOS boot prepared on macOS, NOT flashed <<<
 User asked to prepare the full iOS boot but not to erase userdata yet. Nothing on
 the phone was touched in this step; the next step (`fastboot -S 512M flash userdata
