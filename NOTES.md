@@ -21,6 +21,11 @@
   02:fa:11:7a:00:01 / :02. Boot 23:56:28: lsd `IONameMatch wlan -> IOPlatformDevice`,
   `bluetooth -> IOPlatformDevice`, no retry loop; SpringBoard creates a 1125x2436
   surface (`SWEET SURF: SpringBoard create id 12 ... fmt 0x77333072`), swaps reach 34.
+- **MILESTONE (user, ~00:00 2026-10-24): iOS 16.7.16 home screen on the OnePlus 6T.**
+  App icons show; other UI elements are white and the background black (no GPU:
+  CPU CoreAnimation renderer; materials/blur/wallpaper not drawn as on a real device).
+  Image: `build/macs/shim-boot-macs.img` (8 CPUs, sweetfb_noconsole, sweetsample=lsd,SpringBoard,
+  sweetiolog=lsd, kernel run 40069379881, shim with tear-check fix, ADT with MACs/serial).
 
 ## >>> 2026-10-23 late night: 6T display FIXED (shim enables PP0 tear check) <<<
 - `fajita_dpu=3` (patch 0090, CI run 40069379881 on `ced3e7d`, success) logged
