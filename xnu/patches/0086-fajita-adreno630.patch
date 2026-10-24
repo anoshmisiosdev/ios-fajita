@@ -1,9 +1,9 @@
 diff --git a/bsd/dev/sweet_gpu_a6xx.c b/bsd/dev/sweet_gpu_a6xx.c
 new file mode 100644
-index 0000000..d400b07
+index 0000000..c3e5ff1
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_a6xx.c
-@@ -0,0 +1,2688 @@
+@@ -0,0 +1,2699 @@
 +/*
 + * Adreno 630 (A630, SDM845, OnePlus 6T "fajita") power-up and kernel client.
 + *
@@ -2381,9 +2381,15 @@ index 0000000..d400b07
 +	if (g_trap_pa == 0) {
 +		return false;
 +	}
-+	gw64(R_UCHE_WRITE_RANGE_MAX, g_trap_pa + 0xfc0);
-+	gw64(R_UCHE_TRAP_BASE, g_trap_pa);
-+	gw64(R_UCHE_WRITE_THRU_BASE, g_trap_pa);
++	/*
++	 * Mainline a6xx_hw_init values: the trap/write-through page and the
++	 * write-range limit sit at the top of the GPU address space, so no
++	 * ordinary write is out of range. A real page here (g_trap_pa) is the
++	 * suspect for the CP marker the 6T never wrote (2026-10-24).
++	 */
++	gw64(R_UCHE_WRITE_RANGE_MAX, 0x0001ffffffffffc0ull);
++	gw64(R_UCHE_TRAP_BASE, 0x0001fffffffff000ull);
++	gw64(R_UCHE_WRITE_THRU_BASE, 0x0001fffffffff000ull);
 +	gw64(R_UCHE_GMEM_RANGE_MIN, 0x100000);
 +	gw64(R_UCHE_GMEM_RANGE_MAX, 0x1fffff);
 +	gw(R_UCHE_FILTER_CNTL, 0x804);
@@ -2452,6 +2458,11 @@ index 0000000..d400b07
 +	printf("SWEET GPU: CP marker %08x (%s)\n", got,
 +	    got == 0xc0ffee01u ? "command processor works" : "NO WRITE");
 +	if (got != 0xc0ffee01u) {
++		printf("SWEET GPU: marker scratch %llx trap %llx sqe %llx\n",
++		    (unsigned long long)g_scratch, (unsigned long long)g_trap_pa,
++		    (unsigned long long)g_sqe_pa);
++		cp_state("after marker:");
++		smmu_faults("after marker:");
 +		return false;
 +	}
 +
