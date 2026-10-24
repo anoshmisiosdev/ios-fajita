@@ -19,8 +19,8 @@ build/ios16-root.simg`) erases Android and waits for the user's explicit OK.
   `./fajita.sh root` in the VM: exit 0, HFS+ volume 12 G used of 16 G, root tweaks
   applied, final `fsck.hfsplus -n`: `The volume iOSRoot appears to be OK`.
   `build/ios16-root.simg` 12,145,328,468 bytes.
-- `./fajita.sh phone` (SWEETGPU=0): `shim/out/shim-boot.img` 18,014,208 bytes,
-  sha256 `e6d0e5d0…6e8b`, ADT dram-base 0x100000000 / dram-size 0xc0000000, with
+- `./fajita.sh phone` (SWEETGPU=0, after b52f8ca: no sweetgl `sweetenv`): `shim/out/shim-boot.img`,
+  sha256 `04dce604…ffaa`, ADT dram-base 0x100000000 / dram-size 0xc0000000, with
   d22ap.adt. Not booted. Expect the display issue from the first run (shim: no tear
   check; kernel: kicks counted, screen black); USB Ethernet / ssh should be the way
   in.
