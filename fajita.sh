@@ -10,6 +10,7 @@
 #   ./fajita.sh qemu-ios         boot iOS in QEMU from a RAM disk and save screenshots
 #   ./fajita.sh gpu-fw [DIR]     collect the Adreno 630 firmware pulled off your phone
 #   ./fajita.sh phone            build the boot image for the real phone
+#   ./fajita.sh phone-test       a read-only test image: boots the kernel, writes nothing
 #
 # Everything lands in build/ (git-ignored). Steps are re-runnable: finished
 # downloads and images are reused. Nothing here ever touches a phone: the
@@ -280,6 +281,30 @@ cmd_gpu_fw() {
 	python3 tools/fajita-gpu-fw.py "$src" "$B/gpu-fw"
 }
 
+# ---------------------------------------------------------------- phone-test
+# A boot image for testing on a phone that still runs Android: the kernel,
+# display, touch, USB and the UFS driver come up, but nothing is written to
+# storage (no ufsrw/rootrw, sweetlog=0) and no iOS root is expected, so the
+# boot ends at the root mount. `fastboot boot` runs it from RAM only.
+cmd_phone_test() {
+	need "phone image" aarch64-linux-gnu-gcc mkbootimg cpio gzip python3 || exit 1
+	[[ -f dtb/fajita-appended.dtb ]] || die "dtb/fajita-appended.dtb missing: python3 tools/fajita-dtb.py extract YOUR_STOCK_boot.img dtb (FAJITA.md step 0)"
+	[[ -f xnu/out/kernel.development.sweet ]] || cmd_kernel
+	mkdir -p shim/out
+	python3 tools/mkadt.py shim/out/fajita.adt --highmem
+	python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/fajita.adt shim/out/payload-test.bin \
+		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 wdt=-1 sweetlog=0 sweetusb=2 sweetgpu=0" >/dev/null
+	shim/build.sh ../shim/out/payload-test.bin >/dev/null
+	cp shim/out/shim-boot.img shim/out/shim-boot-test.img
+	say "read-only test image: shim/out/shim-boot-test.img"
+	cat <<-EOF
+	  Boots from RAM and writes nothing (storage read-only, no log written):
+	    fastboot boot shim/out/shim-boot-test.img
+	  Expected end: the kernel waits for its root (userdata still holds Android).
+	  Hold Power + Volume Down to get back to fastboot, then 'fastboot reboot'.
+	EOF
+}
+
 # ---------------------------------------------------------------- phone
 cmd_phone() {
 	need "phone image" aarch64-linux-gnu-gcc mkbootimg cpio gzip python3 || exit 1
@@ -322,7 +347,8 @@ qemu-smoke) cmd_qemu_smoke ;;
 qemu-ios)   cmd_qemu_ios ;;
 gpu-fw)     shift; cmd_gpu_fw "$@" ;;
 phone)      cmd_phone ;;
+phone-test) cmd_phone_test ;;
 all)        cmd_deps || die "install the missing tools first"
             cmd_kernel; cmd_ipsw; cmd_root; cmd_qemu_smoke; cmd_qemu_ios ;;
-*)          sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
+*)          sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac
