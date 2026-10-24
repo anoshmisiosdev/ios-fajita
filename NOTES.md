@@ -20,6 +20,9 @@
   **the whole panel shows the live XNU console** (photo: SWEET USB events, launchd
   boot tasks, `Obliterator: No obliteration needed`, `mount-phase-2`, `exec mount`,
   boot progress band at the bottom). USB log streams; backboardd running.
+- Later in the same boot (user photo): **the Apple boot logo is on screen**, centred,
+  with kernel console lines (`SWEET AKS: cloudd/adprivacyd/remotepairingdeviced/
+  ScreenTimeAgent/transparencyd ...`) still drawn beside it.
 - Host gotcha: macOS `nc -ul` locks onto the first sender's port; restart it
   after each phone reboot.
 
