@@ -1,9 +1,9 @@
 diff --git a/bsd/dev/sweet_gpu_a6xx.c b/bsd/dev/sweet_gpu_a6xx.c
 new file mode 100644
-index 0000000..4737b42
+index 0000000..d400b07
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_a6xx.c
-@@ -0,0 +1,2677 @@
+@@ -0,0 +1,2688 @@
 +/*
 + * Adreno 630 (A630, SDM845, OnePlus 6T "fajita") power-up and kernel client.
 + *
@@ -2417,12 +2417,33 @@ index 0000000..4737b42
 +	rb_n = 0;
 +	emit(pkt7(CP_ME_INIT, 8));
 +	emit(0x2f); emit(3); emit(0x20000000); emit(0); emit(0); emit(0); emit(0); emit(0);
++	if (!kick() || !gpu_idle()) {
++		cp_state("after CP_ME_INIT:");
++		return false;
++	}
++
++	/*
++	 * The CP starts in secure mode and cannot write non-secure memory until
++	 * the zap shader is in and CP_SET_SECURE_MODE 0 has run (mainline
++	 * a6xx_hw_init order). The marker write used to come first and never
++	 * landed on the 6T (2026-10-24: "CP marker 00000000").
++	 */
++	if (!zap_load()) {
++		printf("SWEET GPU: zap shader failed, the GPU stays secure\n");
++		return false;
++	}
++	emit(pkt7(CP_SET_SECURE_MODE, 1)); emit(0);
++	if (!kick() || !gpu_idle()) {
++		cp_state("after CP_SET_SECURE_MODE:");
++		return false;
++	}
++
 +	emit(pkt7(CP_MEM_WRITE, 3));
 +	emit((uint32_t)g_scratch);
 +	emit((uint32_t)(g_scratch >> 32));
 +	emit(0xc0ffee01u);
 +	if (!kick() || !gpu_idle()) {
-+		cp_state("after CP_ME_INIT:");
++		cp_state("after CP_MEM_WRITE:");
 +		return false;
 +	}
 +	delay(1000);
@@ -2431,16 +2452,6 @@ index 0000000..4737b42
 +	printf("SWEET GPU: CP marker %08x (%s)\n", got,
 +	    got == 0xc0ffee01u ? "command processor works" : "NO WRITE");
 +	if (got != 0xc0ffee01u) {
-+		return false;
-+	}
-+
-+	if (!zap_load()) {
-+		printf("SWEET GPU: zap shader failed, the GPU stays secure\n");
-+		return false;
-+	}
-+	emit(pkt7(CP_SET_SECURE_MODE, 1)); emit(0);
-+	if (!kick() || !gpu_idle()) {
-+		cp_state("after CP_SET_SECURE_MODE:");
 +		return false;
 +	}
 +
