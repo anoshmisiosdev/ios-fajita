@@ -157,9 +157,17 @@ def check(b):
     print('memory banks:')
     for a, s in banks:
         print(f'  {a:#012x} + {s:#x}  ({s / 2**30:.2f} GiB)')
+    # ABL may split one physical range into back-to-back banks (an 8 GiB 6T
+    # reports 0x80000000+4G and 0x180000000+~4G): treat those as one range.
+    merged = []
+    for a, s in sorted(banks):
+        if merged and merged[-1][0] + merged[-1][1] == a:
+            merged[-1] = (merged[-1][0], merged[-1][1] + s)
+        else:
+            merged.append((a, s))
     hb, hs = DEFAULT_HIGH
-    fits = any(a <= hb and hb + hs <= a + s for a, s in banks)
-    print(f"kernel RAM {hb:#x} + {hs:#x}: {'inside a bank' if fits else 'NOT inside one bank'}")
+    fits = any(a <= hb and hb + hs <= a + s for a, s in merged)
+    print(f"kernel RAM {hb:#x} + {hs:#x}: {'inside contiguous RAM' if fits else 'NOT inside contiguous RAM'}")
     ok &= fits
     rm = next((n for n in r['children'] if n['name'] == 'reserved-memory'), None)
     clash = []

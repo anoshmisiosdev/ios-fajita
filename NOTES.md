@@ -1,5 +1,30 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> 2026-10-23 late: iOS boot prepared on macOS, NOT flashed <<<
+User asked to prepare the full iOS boot but not to erase userdata yet. Nothing on
+the phone was touched in this step; the next step (`fastboot -S 512M flash userdata
+build/ios16-root.simg`) erases Android and waits for the user's explicit OK.
+- `tools/fajita-dtb.py check` now merges back-to-back memory banks. This phone's
+  live FDT (`0x80000000+4G`, `0x180000000+0xfc8a0000`) now gives `kernel RAM
+  0x100000000 + 0xc0000000: inside contiguous RAM` / `consistent with this port`.
+  Not yet verified on hardware with 3 GiB (the first run used 2 GiB).
+- `./fajita.sh ipsw` (macOS works): iPhone10,3 16.7.16 20H392 parts, 7.0 GB, CRC ok;
+  `research/ipsw-x/d22ap.adt` produced.
+- Root built in a Lima Ubuntu 24.04 VM (`limactl`, vz, 4 CPU / 8 GiB / 30 GiB),
+  repo mounted writable via virtiofs. Gotchas: the stock cloud kernel 6.8.0-63 had
+  no `hfsplus` module and no `linux-modules-extra` candidate (installed
+  `linux-generic` -> 6.8.0-147 + reboot); a mount path containing a space ("Application
+  Support") fails in the guest fstab (used `mountPoint: /mnt/fajita` plus a bind mount
+  at the original path so `manifest.json`'s absolute paths resolve).
+  `./fajita.sh root` in the VM: exit 0, HFS+ volume 12 G used of 16 G, root tweaks
+  applied, final `fsck.hfsplus -n`: `The volume iOSRoot appears to be OK`.
+  `build/ios16-root.simg` 12,145,328,468 bytes.
+- `./fajita.sh phone` (SWEETGPU=0): `shim/out/shim-boot.img` 18,014,208 bytes,
+  sha256 `e6d0e5d0…6e8b`, ADT dram-base 0x100000000 / dram-size 0xc0000000, with
+  d22ap.adt. Not booted. Expect the display issue from the first run (shim: no tear
+  check; kernel: kicks counted, screen black); USB Ethernet / ssh should be the way
+  in.
+
 ## >>> 2026-10-23: fajita first hardware run (observations only) <<<
 Host: macOS (Apple silicon), branch `fajita-gpu` at `347d00b`. Phone: OnePlus 6T
 running a LineageOS-based Android 15 (`ro.build.display.id` read once as
