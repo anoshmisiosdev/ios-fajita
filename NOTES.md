@@ -23,7 +23,8 @@ User approved erasing userdata. Observations:
   keystore calls returning 0x0 for many daemons; backboardd repeatedly matches
   `IOAcceleratorES` / `IOAcceleratorESLegacy` -> none (expected with sweetgpu=0,
   no sweetaccel). No panic or watchdog lines. `SWEET USB: ue0 rx 281 tx 537`.
-- Screen: **black** (user). No `FAJITA DPU` kick line appeared in this capture.
+- Screen: **black** (user), except that the user later saw a line of text appear on
+  it (contents not read). No `FAJITA DPU` kick line appeared in this capture.
 - The earlier boot output is not in the stream, so the root-mount and SWEET UFS
   lines were not captured.
 
