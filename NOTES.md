@@ -1,5 +1,35 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> 2026-10-24 ~02:18: Adreno 630 bring-up on the 6T: levels 1-2 pass, level 3 CP works, compute self-test faults <<<
+- Firmware read-only from the phone: `fastboot reboot recovery` (Lineage recovery,
+  userdebug, root adb after enabling ADB in its menu), `vendor_b` mounted
+  `ro,noload`: `/vendor/firmware/a630_sqe.fw`, `a630_gmu.bin`, `a630_zap.mdt/.b00-.b02`
+  (+ `.elf`); sha256 matched on phone and host; `./fajita.sh gpu-fw` squashes the zap
+  (segments identical to the vendor's a630_zap.elf). Kept in build/gpu-fw(-src).
+- Results come from the 0047 log ring (GPU lines precede the USB link): boot level N,
+  Power+VolDown, `fastboot reboot recovery`, read the last 1025 4K blocks of userdata
+  with `adb exec-out dd` + `tools/sweet-log.py` (sweet-log-pull.sh uses GNU `stat`).
+- Level 1 (kernel run 40053965456/0086 as was): `gcc_gpu_snoc_dvm_gfx_clk did not leave
+  halt`. Fix `fe277cd` (CX GDSC before the SMMU DVM/iref branches): `chip_id 06030002`,
+  `cx_gdsc status 80001fe0`, all branches on, `level 1 done`.
+- Level 2 passes: SMMU CB0/CB1 programmed, cmd-db gfx/mx/cx levels, RSCC/PDC init,
+  GMU firmware `babeface`, gfx rail + sptprac on, HFI init/version (gmu 10070000)/perf/bw/
+  test all 0, `RBBM_HW_VERSION 00010003 VBIF_VERSION 200a0000`, `level 2 done`.
+- Level 3, three kernel fixes in 0086:
+  - `2e9aadd`: SQE uploaded without its header dword (mainline adreno_fw_create_bo);
+    vendor SQE version 0x19a (fajita-gpu-fw.py read dword 0 -> "0x0"). Before:
+    CP_ME_INIT never consumed (RPTR 0 WPTR 13).
+  - `f788198`: CP_MEM_WRITE marker after zap + CP_SET_SECURE_MODE 0 (zap: init_image,
+    mem_setup 8c415000, auth_and_reset all 0/0). Marker still 0.
+  - `c2667df`: UCHE_WRITE_RANGE_MAX/TRAP_BASE/WRITE_THRU_BASE = mainline top-of-space
+    values (were a real page) -> **`CP marker c0ffee01 (command processor works)`**.
+- Then the sample4 compute self-test: `quad timeout: RBBM_STATUS 00000001 RPTR 184 WPTR
+  184`, `SMMU CB0 FSR 00000402 FAR 00000000678767c0 FSYNR0 00000001` (translation
+  fault; below both the 2-8 GB identity map and the 8-16 GB GPU VA window),
+  `level 3 sample4 selftest: quad 60, MISMATCH`. Descriptors (tex_desc6/tex_rgba8_6/
+  ibo_desc6) and packets carry both address halves; the faulting address's origin is
+  not found yet. CB0/CB1 FSR read 0x400 even before (bit 10, unexplained).
+
 ## >>> 2026-10-24 00:47: Metal loads SweetMTLDriver on the phone (flat bundle); MTLIOAccelDevice init refused <<<
 - Test client at boot: the root's `/System/Library/xpc/launchd.plist` job
   `com.apple.bluetoothd` (crash-loops anyway) now runs `/usr/lib/sweetmtl/metal_compute
