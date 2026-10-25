@@ -1,5 +1,21 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> 2026-10-25 12:33: all-on boot (sweetgpu=8 + sweetaccel=1 + Metal bundle): no acceleration <<<
+- Image build/allon/shim-boot-allon.img: kernel run 40225686339 (2c0d2ce), ADT with MACs,
+  GPU blobs, `cpus=8 sweetgpu=8 sweetaccel=1 sweetmtl=../../../usr/lib/sweetmtl/SweetMTLDriver
+  sweetmtlclass=SweetMTLDevice sweetnull=backboardd,SpringBoard,metal_compute`; root as flashed
+  10-24 (flat SweetMTLDriver.bundle, metal_compute in the bluetoothd slot).
+- Log ring: `IOAcceleratorES Metal plugin ... class SweetMTLDevice`, level 8 runs levels 1-3
+  as before (CP marker c0ffee01), then the sample4 self-test lands no store (`still sentinel
+  4096 of 4096`) -> `level 3 failed`; service mode never starts.
+- Live log (5 min, 14427 lines): SpringBoard loads the driver (`|SpringBoard| sweetmtl: ...`,
+  `no Metal device: Metal's MTLIOAccelDevice refused the port`, also in metal_compute), and
+  **SpringBoard crash-loops** (32 execs): `CRASH SpringBoard reason ns 11 code 0x0: This app
+  has crashed because it attempted to access privacy-sensitive data without a usage
+  description. ... NSMotionUsageDescription` (string scan: CoreMotion
+  CLMotionActivity::isTypeInVehicle). Not seen on the home-screen boot (no sweetaccel, root
+  before the 10-24 reflash); cause not isolated.
+
 ## >>> 2026-10-25 12:14: sample4 mismatch diagnostics (62df186): dispatch runs, writes nothing <<<
 - The first 62df186 boot (10-24 12:37) never reached the log ring (ring header identical
   to the 4e9f8fb run: total 224145, flush #17); re-booted 10-25 12:14:53 from recovery
