@@ -1,9 +1,9 @@
 diff --git a/bsd/dev/sweet_gpu_a6xx.c b/bsd/dev/sweet_gpu_a6xx.c
 new file mode 100644
-index 0000000..ebe74e9
+index 0000000..2448161
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_a6xx.c
-@@ -0,0 +1,2807 @@
+@@ -0,0 +1,2820 @@
 +/*
 + * Adreno 630 (A630, SDM845, OnePlus 6T "fajita") power-up and kernel client.
 + *
@@ -2555,6 +2555,8 @@ index 0000000..ebe74e9
 +	return true;
 +}
 +
++#define SAMPLE4_SENTINEL	0x5a5aa5a5u
++
 +/* sample4 through the internal engine on two pages: exact copy, no blend. */
 +static bool
 +selftest_level3(void)
@@ -2567,7 +2569,14 @@ index 0000000..ebe74e9
 +	for (uint32_t i = 0; i < PAGE_SIZE / 4; i++) {
 +		((uint32_t *)src_va)[i] = 0xff000000u | ((i * 0x9e3779b1u) & 0xffffffu);
 +	}
-+	bzero((void *)dst_va, PAGE_SIZE);
++	/*
++	 * Sentinel, not zero: on the 6T the destination came back all 0, which
++	 * cannot tell "never written" from "written with zeros" (e.g. a texture
++	 * fetch returning 0).
++	 */
++	for (uint32_t i = 0; i < PAGE_SIZE / 4; i++) {
++		((uint32_t *)dst_va)[i] = SAMPLE4_SENTINEL;
++	}
 +	flush_dcache64((addr64_t)src_pa, PAGE_SIZE, TRUE);
 +	flush_dcache64((addr64_t)dst_pa, PAGE_SIZE, TRUE);
 +
@@ -2614,14 +2623,18 @@ index 0000000..ebe74e9
 +	if (!ok && r == 0) {
 +		/* What did the dispatch write, and is the CPU reading it stale? */
 +		uint32_t *s = (uint32_t *)src_va, *d = (uint32_t *)dst_va;
-+		uint32_t nz = 0, eq = 0, lastnz = ~0u;
++		uint32_t nz = 0, eq = 0, lastnz = ~0u, sent = 0;
 +		for (uint32_t i = 0; i < PAGE_SIZE / 4; i++) {
 +			nz += d[i] != 0;
 +			eq += d[i] == s[i];
++			sent += d[i] == SAMPLE4_SENTINEL;
 +			if (d[i] != 0) {
 +				lastnz = i;
 +			}
 +		}
++		printf("SWEET GPU: sample4 dst: still sentinel %u of %u (%s)\n", sent,
++		    (unsigned)(PAGE_SIZE / 4), sent == PAGE_SIZE / 4 ? "no store landed" :
++		    sent == 0 ? "every word written" : "partly written");
 +		flush_dcache64((addr64_t)dst_pa, PAGE_SIZE, TRUE);
 +		uint32_t nz2 = 0;
 +		for (uint32_t i = 0; i < PAGE_SIZE / 4; i++) {
