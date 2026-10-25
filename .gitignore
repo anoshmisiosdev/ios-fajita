@@ -12,3 +12,4 @@ build/
 
 # SweetMTL build output
 tools/sweetmtl/out/
+tools/sweetgpu-cli/out/
