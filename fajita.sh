@@ -11,6 +11,7 @@
 #   ./fajita.sh gpu-fw [DIR]     collect the Adreno 630 firmware pulled off your phone
 #   ./fajita.sh phone            build the boot image for the real phone
 #   ./fajita.sh phone-test       a read-only test image: boots the kernel, writes nothing
+#                                (SWEETGPU=N for the GPU bring-up levels, which need no iOS)
 #
 # Everything lands in build/ (git-ignored). Steps are re-runnable: finished
 # downloads and images are reused. Nothing here ever touches a phone: the
@@ -294,8 +295,16 @@ cmd_phone_test() {
 	[[ -f xnu/out/kernel.development.sweet ]] || cmd_kernel
 	mkdir -p shim/out
 	python3 tools/mkadt.py shim/out/fajita.adt --highmem
-	python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/fajita.adt shim/out/payload-test.bin \
-		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 wdt=-1 sweetlog=0 sweetusb=2 sweetgpu=0" >/dev/null
+	# SWEETGPU=N runs the GPU bring-up levels here too: they are kernel-only
+	# and need no iOS root, so they can be tested on a phone that runs Android.
+	local gpu=${SWEETGPU:-0} blobs=()
+	if [[ $gpu != 0 ]]; then
+		[[ -f $B/gpu-fw/a630_zap.mbn ]] || die "SWEETGPU=$gpu needs the GPU firmware: ./fajita.sh gpu-fw"
+		blobs=(--blob "GPU-SQE=$B/gpu-fw/a630_sqe.fw" --blob "GPU-GMU=$B/gpu-fw/a630_gmu.bin" --blob "GPU-ZAP=$B/gpu-fw/a630_zap.mbn")
+		say "GPU bring-up level sweetgpu=$gpu (firmware from build/gpu-fw)"
+	fi
+	python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/fajita.adt shim/out/payload-test.bin ${blobs[@]+"${blobs[@]}"} \
+		--cmdline "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 wdt=-1 sweetlog=0 sweetusb=2 sweetgpu=$gpu" >/dev/null
 	shim/build.sh ../shim/out/payload-test.bin >/dev/null
 	cp shim/out/shim-boot.img shim/out/shim-boot-test.img
 	say "read-only test image: shim/out/shim-boot-test.img"
