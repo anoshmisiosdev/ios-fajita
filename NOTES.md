@@ -1,5 +1,20 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> 2026-10-25 12:14: sample4 mismatch diagnostics (62df186): dispatch runs, writes nothing <<<
+- The first 62df186 boot (10-24 12:37) never reached the log ring (ring header identical
+  to the 4e9f8fb run: total 224145, flush #17); re-booted 10-25 12:14:53 from recovery
+  (payload verified to contain the new strings; USB net up after 8 s).
+- Result: `quad 0, MISMATCH (first [0] ... 00000000 want ff000000)`;
+  `sample4 dst: nonzero 0 (after invalidate 0), equal 0 of 4096, last nonzero [-1]`;
+  dst words [0..3, 63..65, 4095] all 0, src as expected (ff000000, ff3779b1, ...);
+  src pa 10456c000 va 200000000, dst pa 104570000 va 200024000;
+  `RBBM_STATUS 00000001 RPTR 219 WPTR 219 CP_HW_FAULT 0 CP_INT 0 RBBM_INT 0`;
+  `addr_mode CP 1 VSC 1 GRAS 1 RB 1 PC 1 HLSQ 1 VFD 1 VPC 1 UCHE 1 SP 1 TPL1 1 TSB 1`;
+  SMMU CB0/CB1 no fault (FSR 0x400 as always).
+- So: fence written, no faults, all blocks in 64-bit mode, CPU cache not the cause, and
+  the 16 KB destination untouched. Open: whether sample4 invocations run at all and where
+  their IBO stores go.
+
 ## >>> 2026-10-24 11:18: A630 compute dispatch completes on the 6T (no fault); output still wrong <<<
 - `5bcefbe`: gpu_alloc cleans freshly KMA_ZERO'd buffers. Before it the CP marker read
   c0ffee01 on one boot and 0 on the next with the same code (dirty zero lines written
