@@ -1,9 +1,9 @@
 diff --git a/bsd/dev/sweet_gpu_a6xx.c b/bsd/dev/sweet_gpu_a6xx.c
 new file mode 100644
-index 0000000..2448161
+index 0000000..af61223
 --- /dev/null
 +++ b/bsd/dev/sweet_gpu_a6xx.c
-@@ -0,0 +1,2820 @@
+@@ -0,0 +1,2845 @@
 +/*
 + * Adreno 630 (A630, SDM845, OnePlus 6T "fajita") power-up and kernel client.
 + *
@@ -2728,6 +2728,19 @@ index 0000000..2448161
 +{
 +	(void)wr;
 +	int level = (int)(uintptr_t)arg;
++
++	/*
++	 * sweetgpudelay=N: start N seconds late, once the USB live log is up,
++	 * so the bring-up lines reach the host without a trip to recovery.
++	 */
++	uint32_t delay_s = 0;
++	if (PE_parse_boot_argn("sweetgpudelay", &delay_s, sizeof(delay_s)) && delay_s > 0) {
++		static int sweet_gpu_delay_chan;
++		printf("SWEET GPU: bring-up in %u s (sweetgpudelay)\n", delay_s);
++		assert_wait_timeout((event_t)&sweet_gpu_delay_chan, THREAD_UNINT,
++		    delay_s * 1000u, NSEC_PER_MSEC);
++		thread_block(THREAD_CONTINUE_NULL);
++	}
 +	printf("SWEET GPU: Adreno 630 bring-up level %d (A630 v2, SDM845)\n", level);
 +
 +	if (!power_on()) {
@@ -2794,17 +2807,29 @@ index 0000000..2448161
 +		printf("SWEET GPU: command processor bring-up failed\n");
 +		return;
 +	}
++	/*
++	 * sweetgpuforce=1: start service mode even when a self-test fails, so
++	 * user space (the SweetGPU user client) can debug the GPU without a
++	 * reboot per experiment. The failure is still logged.
++	 */
++	int force = 0;
++	PE_parse_boot_argn("sweetgpuforce", &force, sizeof(force));
 +	if (!selftest_level3()) {
-+		printf("SWEET GPU: level 3 failed\n");
-+		return;
++		printf("SWEET GPU: level 3 failed%s\n", force ? " (sweetgpuforce: going on)" : "");
++		if (!force) {
++			return;
++		}
++	} else {
++		printf("SWEET GPU: level 3 done (CP, zap, compute self-test)\n");
 +	}
-+	printf("SWEET GPU: level 3 done (CP, zap, compute self-test)\n");
 +	if (level < 8) {
 +		return;
 +	}
 +	if (!selftest_api()) {
-+		printf("SWEET GPU: level 8 API self-test failed\n");
-+		return;
++		printf("SWEET GPU: level 8 API self-test failed%s\n", force ? " (sweetgpuforce: going on)" : "");
++		if (!force) {
++			return;
++		}
 +	}
 +	g_ready = true;
 +	printf("SWEET GPU: service on (A630, GPU VA window 8-16 GB)\n");
