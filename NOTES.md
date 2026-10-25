@@ -1,5 +1,27 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> 2026-10-25 ~16:40 (STOPPED HERE): reboot-free GPU loop half built; new root freezes <<<
+- Kernel `37a23af` (CI run 40227419553): `sweetgpudelay=N` (bring-up N s late, a real sleep)
+  and `sweetgpuforce=1` (service mode even if a self-test fails). Verified 12:58 boot: GPU
+  lines arrived over the live USB log; level 3 still `still sentinel 4096 of 4096`; `api
+  submit -> 0, wait 0 (seq 1, fence 1)`, `api selftest: FAILED`, then `service on`.
+- `tools/sweetgpu-cli` (`79fa125`): `sweetgpu info | memwrite [v] | quad [n]` over the 0085
+  user client; built (iOS arm64, ad-hoc), never run on the phone yet.
+- SSH root (build/ios16-root.img, flashed 12:52-12:58, 391 s): dropbear 2024.86 (SHA-256
+  matched the release list; key auth only, host keys in /private/var/dropbear) and dash 0.5.12
+  built from source for iOS arm64; /bin/sh = dash, /usr/local/bin/{dropbear,dropbearkey,
+  sweetgpu}, /usr/bin/scp, /var/mobile/.ssh/authorized_keys (host's id_ed25519.pub; files are
+  owned 501 because the macOS mount ignores owners, so log in as mobile). launchd.plist:
+  com.apple.fairplayd.H2 -> `dropbear -F -E -R -p 22` (MachServices dropped), bluetoothd slot
+  (metal_compute) KeepAlive false. toybox build was refused by the host's permission check.
+- **This root freezes about 1 min into boot, with and without the GPU** (12:58 sweetgpu=8
+  boot; 16:33 sweetgpu=0 image build/nogpu/shim-boot-nogpu.img): screen frozen on logo/text,
+  live log stops (last: first-boot daemons such as notifyd), ping fails, port 22 closed. The
+  12:58 boot's log ring held only 44 KB / 3 flushes. Cause not found; candidates are the
+  launchd changes above, /bin/sh, or the new files. The 10-24 roots booted fine.
+- Next: read the 16:33 boot's log ring (recovery), then bisect by reverting the launchd.plist
+  change first (original in build/launchd.plist.orig, plus the metal_compute job).
+
 ## >>> 2026-10-25 12:33: all-on boot (sweetgpu=8 + sweetaccel=1 + Metal bundle): no acceleration <<<
 - Image build/allon/shim-boot-allon.img: kernel run 40225686339 (2c0d2ce), ADT with MACs,
   GPU blobs, `cpus=8 sweetgpu=8 sweetaccel=1 sweetmtl=../../../usr/lib/sweetmtl/SweetMTLDriver
