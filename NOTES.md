@@ -14,6 +14,11 @@
 - So: fence written, no faults, all blocks in 64-bit mode, CPU cache not the cause, and
   the 16 KB destination untouched. Open: whether sample4 invocations run at all and where
   their IBO stores go.
+- `2c0d2ce` (boot 2026-10-25 12:28:32): dst prefilled with 0x5a5aa5a5 -> `still sentinel
+  4096 of 4096 (no store landed)`; all sampled words 5a5aa5a5; again no CP/SMMU fault,
+  RPTR=WPTR=219, all ADDR_MODE 1. So sample4 never writes the destination: either no
+  invocation runs or its IBO stores go elsewhere without faulting. A store-only test
+  shader needs Mesa's ir3 assembler, which is not in the repo (0086 has only the binary).
 
 ## >>> 2026-10-24 11:18: A630 compute dispatch completes on the 6T (no fault); output still wrong <<<
 - `5bcefbe`: gpu_alloc cleans freshly KMA_ZERO'd buffers. Before it the CP marker read
